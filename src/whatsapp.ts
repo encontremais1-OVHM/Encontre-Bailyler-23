@@ -146,7 +146,13 @@ export async function listCommunities(configuredJid:string){
     let meta:any=group;
     if(id===configuredJid){
       try{meta={...group,...await getCommunity(id)};}catch{}
+    }else if(!Array.isArray(meta.participants)||meta.participants.length===0){
+      try{meta={...meta,...await wa.groupMetadata(id)};}catch{}
     }
+    const self=phoneFromJid(String(wa.user?.id??""));
+    const isAdmin=(meta.participants||[]).some((p:any)=>
+      phoneFromJid(String(p.id||p.jid||""))===self&&(p.admin==="admin"||p.admin==="superadmin")
+    );
     const subgroups=groups.filter(g=>String(g.linkedParent||"")===id);
     const profile=await wa.profilePictureUrl(id,"image").catch(()=>null);
     const childrenWithPictures=[];
@@ -165,6 +171,7 @@ export async function listCommunities(configuredJid:string){
       subject:String(meta.subject||group.subject||"Comunidade WhatsApp"),
       description:meta.desc?String(meta.desc):null,
       profile_picture_url:profile||null,
+      isAdmin,
       subgroups:childrenWithPictures,
     });
   }
