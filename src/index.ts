@@ -26,7 +26,7 @@ function auth(req:Request,res:Response,next:NextFunction){
 const secure=[auth];
 async function saveEvent(type:string,payload:unknown){
   const stable=JSON.stringify({type,payload});
-  const id=crypto.createHash("sha256").update(stable).digest("hex");
+  const id=crypto.randomUUID();
   const {error}=await db.from(env.SUPABASE_EVENTS_TABLE).upsert({
     provider:"baileys_whatsapp_web",event_type:type,external_event_id:id,payload,
     received_at:new Date().toISOString(),processing_status:"received"
@@ -34,6 +34,7 @@ async function saveEvent(type:string,payload:unknown){
   if(error)throw error;
 }
 void connect({authDir:path.resolve(env.AUTH_DIR),onEvent:async(type,payload)=>{
+  if(type==="group.participants.update" && (payload as {id?:string})?.id!==env.COMMUNITY_JID) return;
   try{await saveEvent(type,payload);}catch(e){console.error("Supabase event persistence failed",type,e);}
 }}).catch(e=>console.error("WhatsApp startup failed",e));
 
