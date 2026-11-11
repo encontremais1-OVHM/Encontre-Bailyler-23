@@ -30,7 +30,17 @@ export async function connect(next?:Options):Promise<void>{
   connecting=true; connectionState="connecting";lastError=null;
   try{
     await fs.mkdir(options.authDir,{recursive:true});
-    const {state,saveCreds}=await useMultiFileAuthState(options.authDir);
+    let auth=await useMultiFileAuthState(options.authDir);
+    // The previous Baileys build could persist creds.me before WhatsApp
+    // accepted a phone-code request. Such an unregistered identity is not a
+    // valid session and would make every restart attempt a doomed login.
+    if(auth.state.creds.me && !auth.state.creds.registered){
+      logger.warn("Discarding incomplete, unregistered WhatsApp pairing credentials; a fresh QR/code can be generated.");
+      await fs.rm(options.authDir,{recursive:true,force:true});
+      await fs.mkdir(options.authDir,{recursive:true});
+      auth=await useMultiFileAuthState(options.authDir);
+    }
+    const {state,saveCreds}=auth;
     registered=state.creds.registered;
     const versionResult=await resolveWaWebVersion({cachePath:path.join(options.authDir,"wa-version.json")});
     const version=versionResult.version;
