@@ -31,15 +31,10 @@ export async function connect(next?:Options):Promise<void>{
   try{
     await fs.mkdir(options.authDir,{recursive:true});
     let auth=await useMultiFileAuthState(options.authDir);
-    // The previous Baileys build could persist creds.me before WhatsApp
-    // accepted a phone-code request. Such an unregistered identity is not a
-    // valid session and would make every restart attempt a doomed login.
-    if(auth.state.creds.me && !auth.state.creds.registered){
-      logger.warn("Discarding incomplete, unregistered WhatsApp pairing credentials; a fresh QR/code can be generated.");
-      await fs.rm(options.authDir,{recursive:true,force:true});
-      await fs.mkdir(options.authDir,{recursive:true});
-      auth=await useMultiFileAuthState(options.authDir);
-    }
+    // Never delete an unregistered identity automatically here. QR pairing can
+    // be accepted by WhatsApp immediately before stream:error 515 asks the
+    // companion to restart. The saved creds.me is required to finish that
+    // handshake on the next socket; deleting it breaks successful QR scans.
     const {state,saveCreds}=auth;
     registered=state.creds.registered;
     const versionResult=await resolveWaWebVersion({cachePath:path.join(options.authDir,"wa-version.json")});
@@ -69,8 +64,15 @@ export async function connect(next?:Options):Promise<void>{
         const loggedOut=code===DisconnectReason.loggedOut;
         connectionState=loggedOut?"logged_out":"disconnected";sock=null;qr=null;pairingCode=null;
         if(!loggedOut&&options&&!reconnectTimer){
-          const delay=Math.min(5000*Math.pow(2,reconnectAttempt),60000);
-          reconnectAttempt+=1;
+          // WhatsApp deliberately closes the stream with 515 after a device
+          // has been paired. This is a protocol instruction to reconnect now,
+          // not a failed login. Preserve auth and restart without exponential
+          // backoff so the QR handshake can finish promptly.
+          const restartRequired=code===DisconnectReason.restartRequired;
+          const delay=restartRequired?250:Math.min(5000*Math.pow(2,reconnectAttempt),60000);
+          if(restartRequired)reconnectAttempt=0;
+          else reconnectAttempt+=1;
+          logger.info({statusCode:code,delay,restartRequired},"Scheduling WhatsApp reconnect");
           reconnectTimer=setTimeout(()=>{reconnectTimer=null;void connect().catch(e=>logger.error(e,"Reconnect failed"));},delay);
         }
       }
