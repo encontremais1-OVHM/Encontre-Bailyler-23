@@ -17,7 +17,7 @@ A API não cria grupos e não decide assinaturas, pagamentos ou elegibilidade. E
 - `@whiskeysockets/baileys@6.7.24`
 - QR Code / pairing code
 - Sessão persistente em volume Railway: `/data/whatsapp-auth`
-- Supabase externo para guardar eventos de ligação e de participantes
+- Supabase externo para confirmar eventos reais de entrada/saída através da Edge Function `whatsapp-confirmation`
 - API key de servidor em `x-api-key`
 
 ## Endpoints
@@ -46,9 +46,8 @@ Exemplo de corpo para adicionar/remover: `{"phoneNumber":"+2449XXXXXXXX"}`.
 A API usa o protocolo interno WhatsApp Web de comunidades (`w:g2`) através do socket Baileys, porque a API pública estável do Baileys 6.x não oferece métodos tipados de comunidade. Este protocolo não é documentado nem garantido: mudanças no WhatsApp podem exigir manutenção. Por isso o CI prova apenas compilação; a operação real só pode ser aprovada depois de emparelhar uma conta de teste e executar add/remove numa comunidade de teste.
 
 ## Regras de segurança e confirmação
-- O serviço só opera no JID fixado em `COMMUNITY_JID`; o cliente não pode escolher outro grupo.
-- Antes da alteração, consulta os metadados e exige que a comunidade seja reconhecida como comunidade.
-- Confirma que a conta WhatsApp ligada é administradora da comunidade.
+- A comunidade principal é identificada por `COMMUNITY_JID`; as restantes comunidades/grupos são descobertos a partir da sessão ligada.
+- Antes de cada alteração, consulta os metadados e exige que a conta ligada seja administradora do grupo/comunidade escolhido.
 - Valida se o número existe no WhatsApp e verifica se já é membro/não é membro.
 - O resultado da chamada de adição/remoção é apenas uma operação submetida. **Nunca ativa nem termina uma assinatura por si só.**
 - A privacidade do destinatário e as regras do WhatsApp podem impedir a inclusão direta; o serviço não transforma uma resposta de convite/recusa em adesão confirmada.
@@ -66,9 +65,7 @@ Copiar `.env.example`:
 - `COMMUNITY_JID` — ID WhatsApp da comunidade principal, formato `...@g.us`
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
-- A tabela antiga `whatsapp_web_events` já não é usada por esta versão; os eventos seguem para a Edge Function existente `whatsapp-confirmation`.
-
-Aplicar manualmente `supabase/whatsapp-web-events.sql` no projeto Supabase externo depois de rever. Não altera tabelas de membros ou assinaturas.
+- A tabela legada `whatsapp_web_events` não é necessária. Os eventos são validados e processados pela Edge Function `whatsapp-confirmation`, que usa a tabela `whatsapp_webhook_events` já existente.
 
 ## Railway
 1. Criar um serviço novo ligado a este repositório e branch `main`.
@@ -93,4 +90,4 @@ Aplicar manualmente `supabase/whatsapp-web-events.sql` no projeto Supabase exter
 ## Aviso
 Baileys é uma biblioteca não oficial, sem afiliação ou suporte do WhatsApp. Mudanças no protocolo podem interromper o serviço e a automação pode expor a conta a restrições. A entrada direta pode ser recusada pelas configurações de privacidade do utilizador ou por limitações do WhatsApp; o serviço devolve o resultado da operação e não finge que a adesão foi concluída.
 
-Boiler inicial. Build, deploy, emparelhamento e operações reais ainda precisam ser testados.
+A compilação valida os contratos TypeScript; a aprovação operacional exige emparelhar a conta administradora e testar QR, código, descoberta de comunidades, sincronização, entrada e remoção com um número de teste.
