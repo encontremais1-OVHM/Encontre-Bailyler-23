@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import makeWASocket, { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, type WASocket, type GroupMetadata } from "@whiskeysockets/baileys";
+import makeWASocket, { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, type WASocket } from "@whiskeysockets/baileys";
 import pino from "pino";
 
 export type WaEventHandler=(type:string,payload:unknown)=>Promise<void>|void;
@@ -73,24 +73,49 @@ export async function logout(){
   if(options)await fs.rm(options.authDir,{recursive:true,force:true});
 }
 export function socket(){return requireSocket();}
-export async function getCommunity(jid:string):Promise<GroupMetadata>{
-  const meta=await requireSocket().groupMetadata(jid);
-  if(!meta.isCommunity)throw new Error("Configured COMMUNITY_JID is not identified by WhatsApp as a community");
-  return meta;
+type CommunityMetadata={id:string;subject:string;participants:Array<{id:string;admin?:string|null}>};
+function child(node:any,tag:string){return (node?.content??[]).find((item:any)=>item?.tag===tag);}
+function children(node:any,tag:string){return (node?.content??[]).filter((item:any)=>item?.tag===tag);}
+async function communityQuery(jid:string,type:"get"|"set",content:any[]){
+  const wa=requireSocket() as any;
+  if(typeof wa.query!=="function")throw new Error("This Baileys build does not expose the required WhatsApp community protocol query");
+  return wa.query({tag:"iq",attrs:{type,xmlns:"w:g2",to:jid},content});
+}
+export async function getCommunity(jid:string):Promise<CommunityMetadata>{
+  const result=await communityQuery(jid,"get",[{tag:"query",attrs:{request:"interactive"}}]);
+  const community=child(result,"community");
+  if(!community)throw new Error("WhatsApp did not return community metadata for COMMUNITY_JID");
+  const isCommunity=Boolean(child(community,"parent"));
+  if(!isCommunity)throw new Error("Configured COMMUNITY_JID is not a WhatsApp community");
+  const rawId=String(community.attrs?.id??jid);
+  return {
+    id:rawId.includes("@")?rawId:rawId+"@g.us",
+    subject:String(community.attrs?.subject??""),
+    participants:children(community,"participant").map((p:any)=>({id:String(p.attrs?.jid??""),admin:p.attrs?.type??null}))
+  };
 }
 export async function participantAction(jid:string,phone:string,action:"add"|"remove"){
-  const wa=requireSocket();
+  const wa=requireSocket() as any;
   const meta=await getCommunity(jid);
-  const self=wa.user?.id?.split(":")[0];
-  const admin=meta.participants.some(p=>p.id.split(":")[0]===self&&(p.admin==="admin"||p.admin==="superadmin"||p.isAdmin||p.isSuperAdmin));
+  const self=String(wa.user?.id??"").split(":")[0];
+  const admin=meta.participants.some(p=>p.id.split(":")[0]===self&&(p.admin==="admin"||p.admin==="superadmin"));
   if(!admin)throw new Error("The connected WhatsApp account is not an administrator of the configured community");
-  const normalized=phone.replace(/\D/g,"");
+  const normalized=phone.replace(/\\D/g,"");
   const [existence]=await wa.onWhatsApp(normalized);
   if(!existence?.exists||!existence.jid)throw new Error("The supplied phone number is not registered on WhatsApp");
-  const target=existence.jid;
+  const target=String(existence.jid);
   const already=meta.participants.some(p=>p.id===target||p.id.split(":")[0]===normalized);
   if(action==="add"&&already)return {phone:normalized,action,status:"already_member",jid:target};
   if(action==="remove"&&!already)return {phone:normalized,action,status:"not_member",jid:target};
-  const result=await wa.groupParticipantsUpdate(jid,[target],action);
-  return {phone:normalized,action,status:"request_submitted",jid:target,result};
+  const response=await communityQuery(jid,"set",[{
+    tag:action,
+    attrs:action==="remove"?{linked_groups:"true"}:{},
+    content:[{tag:"participant",attrs:{jid:target}}]
+  }]);
+  const resultNode=child(response,action);
+  const participant=children(resultNode,"participant").find((p:any)=>p.attrs?.jid===target);
+  if(!participant)throw new Error("WhatsApp returned no per-participant result; operation is not confirmed");
+  const waStatus=String(participant.attrs?.error??"200");
+  if(waStatus!=="200")throw new Error("WhatsApp rejected the community "+action+" operation (status "+waStatus+")");
+  return {phone:normalized,action,status:"request_submitted",jid:target,whatsappStatus:waStatus,removesFromLinkedGroups:action==="remove"};
 }
