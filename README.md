@@ -31,7 +31,7 @@ Todas as rotas `/v1/*` exigem `x-api-key`.
 | GET | `/v1/session/qr` | Obter QR em texto e Data URL |
 | POST | `/v1/session/pairing-code` | Pedir código de associação |
 | POST | `/v1/session/logout` | Terminar sessão |
-| GET | `/v1/community` | Verificar a comunidade principal configurada |
+| GET | `/v1/community` | Verificar a comunidade principal e se a conta ligada é administradora |
 | GET | `/v1/communities` | Descobrir comunidades e subgrupos da conta ligada |
 | GET | `/v1/groups/:jid/participants` | Consultar participantes |
 | POST | `/v1/groups/:jid/participants/add` | Submeter entrada num grupo/comunidade |
@@ -55,7 +55,7 @@ A API usa o protocolo interno WhatsApp Web de comunidades (`w:g2`) através do s
 - Os eventos reais `group.participants.update` são assinados com HMAC e enviados para a Edge Function `whatsapp-confirmation`; a função valida a assinatura e confirma a adesão/remoção no Supabase.
 - Uma resposta HTTP de sucesso da operação nunca altera por si só o estado `joined`; a confirmação depende do evento real ou de reconciliação por snapshot.
 - A aplicação deve validar número, inscrição, assinatura, carência e grupo antes de atualizar o estado do membro.
-- A API key e a service-role key nunca podem ir para o browser. O frontend deverá chamar uma Supabase Edge Function/backend que autentique o utilizador e autorize a operação.
+- A API key e a service-role key nunca podem ir para o browser. O frontend chama as Netlify Functions autenticadas, que fazem a comunicação servidor-a-servidor; os eventos do Baileys seguem assinados para a Edge Function `whatsapp-confirmation`.
 
 ## Variáveis de ambiente
 Copiar `.env.example`:
