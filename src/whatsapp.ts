@@ -82,8 +82,18 @@ export async function pairing(phone:string){
   const wa=sock;
   if(!wa)throw new Error("WhatsApp connection is still starting. Try generating the pairing code again in a moment.");
   if(registered)throw new Error("This WhatsApp session is already paired");
-  const code=await wa.requestPairingCode(phone);
-  pairingCode=code;qr=null;return code;
+  // Switch the panel to phone-code mode so a previously displayed QR cannot
+  // remain visible while the server validates the pairing registration.
+  pairingCode=null;qr=null;connectionState="connecting";lastError=null;
+  try {
+    const code=await wa.requestPairingCode(phone);
+    pairingCode=code;
+    lastError=null;
+    return code;
+  } catch(error) {
+    lastError=error instanceof Error?error.message:"Could not request a WhatsApp pairing code";
+    throw error;
+  }
 }
 export async function logout(){
   if(reconnectTimer)clearTimeout(reconnectTimer);reconnectTimer=null;
