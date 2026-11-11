@@ -34,12 +34,17 @@ Todas as rotas `/v1/*` exigem `x-api-key`.
 
 Exemplo de corpo para adicionar/remover: `{"phoneNumber":"+2449XXXXXXXX"}`.
 
+## Implementação específica de comunidades
+A API usa o protocolo interno WhatsApp Web de comunidades (`w:g2`) através do socket Baileys, porque a API pública estável do Baileys 6.x não oferece métodos tipados de comunidade. Este protocolo não é documentado nem garantido: mudanças no WhatsApp podem exigir manutenção. Por isso o CI prova apenas compilação; a operação real só pode ser aprovada depois de emparelhar uma conta de teste e executar add/remove numa comunidade de teste.
+
 ## Regras de segurança e confirmação
 - O serviço só opera no JID fixado em `COMMUNITY_JID`; o cliente não pode escolher outro grupo.
 - Antes da alteração, consulta os metadados e exige que a comunidade seja reconhecida como comunidade.
 - Confirma que a conta WhatsApp ligada é administradora da comunidade.
 - Valida se o número existe no WhatsApp e verifica se já é membro/não é membro.
 - O resultado da chamada de adição/remoção é apenas uma operação submetida. **Nunca ativa nem termina uma assinatura por si só.**
+- A privacidade do destinatário e as regras do WhatsApp podem impedir a inclusão direta; o serviço não transforma uma resposta de convite/recusa em adesão confirmada.
+- A remoção da comunidade pede também remoção dos grupos ligados (`linked_groups=true`), conforme o protocolo WhatsApp Web.
 - Os eventos reais `group.participants.update` são guardados no Supabase para reconciliação posterior.
 - A aplicação deve validar número, inscrição, assinatura, carência e grupo antes de atualizar o estado do membro.
 - A API key e a service-role key nunca podem ir para o browser. O frontend deverá chamar uma Supabase Edge Function/backend que autentique o utilizador e autorize a operação.
