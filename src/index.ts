@@ -12,7 +12,7 @@ const env=z.object({
   PORT:z.coerce.number().int().positive().default(8080),
   SERVICE_API_KEY:z.string().min(32),
   AUTH_DIR:z.string().default("/data/whatsapp-auth"),
-  COMMUNITY_JID:z.string().regex(/^\d+-\d+@g\.us$/),
+  COMMUNITY_JID:z.string().regex(/^\\d+(?:-\\d+)?@g\\.us$/),
   SUPABASE_URL:z.string().url(),
   SUPABASE_SERVICE_ROLE_KEY:z.string().min(1),
   SUPABASE_EVENTS_TABLE:z.string().default("whatsapp_web_events")
