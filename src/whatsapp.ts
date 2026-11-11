@@ -37,7 +37,8 @@ export async function connect(next?:Options):Promise<void>{
     logger.info({version,source:versionResult.source,isLatest:versionResult.isLatest},"WhatsApp Web protocol version selected");
     const wa=makeWASocket({
       version,auth:state,logger:logger.child({module:"baileys"}),
-      // Use a recognised browser descriptor. WhatsApp rejects product-branded platform labels during phone pairing.\n      browser:Browsers.macOS("Chrome"),
+      // Use a recognised browser descriptor. WhatsApp rejects product-branded platform labels during phone pairing.
+      browser:Browsers.macOS("Chrome"),
       printQRInTerminal:false,markOnlineOnConnect:false,syncFullHistory:false,
       generateHighQualityLinkPreview:false,
     });
