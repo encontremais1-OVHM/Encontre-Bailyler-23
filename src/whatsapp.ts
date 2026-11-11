@@ -192,8 +192,8 @@ export async function groupParticipantAction(jid:string,phone:string,action:"add
   if(!selfParticipant||!(selfParticipant.admin==="admin"||selfParticipant.admin==="superadmin")){
     throw new Error("The connected WhatsApp account is not an administrator of this group");
   }
-  const normalized=phone.replace(/\\D/g,"");
-  if(!/^\\d{8,15}$/.test(normalized))throw new Error("Invalid WhatsApp phone number");
+  const normalized=phone.replace(/\D/g,"");
+  if(!/^\d{8,15}$/.test(normalized))throw new Error("Invalid WhatsApp phone number");
   const [existence]=await wa.onWhatsApp(normalized);
   if(!existence?.exists||!existence.jid)throw new Error("The supplied phone number is not registered on WhatsApp");
   const target=String(existence.jid);
@@ -224,8 +224,8 @@ export async function groupProfilePicture(jid:string){
 
 export async function sendTextMessage(phone:string,message:string){
   const wa=requireSocket() as any;
-  const normalized=phone.replace(/\\D/g,"");
-  if(!/^\\d{8,15}$/.test(normalized))throw new Error("Invalid WhatsApp phone number");
+  const normalized=phone.replace(/\D/g,"");
+  if(!/^\d{8,15}$/.test(normalized))throw new Error("Invalid WhatsApp phone number");
   if(!message.trim())throw new Error("Message cannot be empty");
   const [existence]=await wa.onWhatsApp(normalized);
   if(!existence?.exists||!existence.jid)throw new Error("The supplied phone number is not registered on WhatsApp");
