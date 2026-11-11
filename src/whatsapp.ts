@@ -108,14 +108,20 @@ export async function participantAction(jid:string,phone:string,action:"add"|"re
   if(!existence?.exists||!existence.jid)throw new Error("The supplied phone number is not registered on WhatsApp");
   const target=String(existence.jid);
   if(action==="remove" && phoneFromJid(target)===self) throw new Error("The connected administrator account cannot remove itself from its community");
-  const already=meta.participants.some(p=>p.id===target||phoneFromJid(p.id)===normalized);
+  const existingParticipant=meta.participants.find(p=>p.id===target||phoneFromJid(p.id)===normalized);
+  const already=Boolean(existingParticipant);
+  if(action==="remove" && existingParticipant && (existingParticipant.admin==="admin"||existingParticipant.admin==="superadmin")){
+    throw new Error("Refusing to remove a community administrator; administrator removal requires a separate manual review");
+  }
   if(action==="add"&&already)return {phone:normalized,action,status:"already_member",jid:target};
   if(action==="remove"&&!already)return {phone:normalized,action,status:"not_member",jid:target};
-  const response=await communityQuery(jid,"set",[{
-    tag:action,
-    attrs:action==="remove"?{linked_groups:"true"}:{},
-    content:[{tag:"participant",attrs:{jid:target}}]
-  }]);
+  const response=await communityQuery(jid,"set",[
+    {
+      tag:action,
+      attrs:action==="remove"?{linked_groups:"true"}:{},
+      content:[{tag:"participant",attrs:{jid:target}}]
+    }
+  ]);
   const resultNode=child(response,action);
   const participant=children(resultNode,"participant").find((p:any)=>p.attrs?.jid===target);
   if(!participant)throw new Error("WhatsApp returned no per-participant result; operation is not confirmed");
