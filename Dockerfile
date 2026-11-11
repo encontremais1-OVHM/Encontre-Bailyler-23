@@ -13,6 +13,5 @@ COPY package*.json ./
 RUN npm install --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 RUN mkdir -p /data/whatsapp-auth
-VOLUME ["/data"]
 EXPOSE 8080
 CMD ["npm","start"]
