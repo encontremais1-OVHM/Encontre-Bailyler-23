@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import path from "node:path";
 import makeWASocket, { Browsers, DisconnectReason, useMultiFileAuthState, resolveWaWebVersion, type WASocket } from "@chaeulso/baileys";
 import pino from "pino";
 
