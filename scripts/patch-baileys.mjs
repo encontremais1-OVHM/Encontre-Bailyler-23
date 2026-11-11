@@ -29,7 +29,7 @@ await patchFile("lib/Socket/socket.js", (original) => {
     source,
     "        if (!creds.me) {",
     "        // ENCONTRE MAIS PATCH: keep pending phone pairing in registration mode.\n        if (!creds.me || (!!creds.pairingCode && !creds.registered)) {",
-    "ENCONTRE MAIS PATCH: registration handshake"
+    "ENCONTRE MAIS PATCH: keep pending phone pairing in registration mode."
   );
 
   const oldStart = "                authState.creds.pairingCode = pairingCode;";
@@ -107,13 +107,13 @@ await patchFile("lib/Socket/socket.js", (original) => {
   source = replaceOnce(
     source,
     "    async function generatePairingKey() {",
-    "    async function generatePairingKey(pairingCode) {",
+    "    // ENCONTRE MAIS PATCH: derive key from request-local code.\\n    async function generatePairingKey(pairingCode) {",
     "ENCONTRE MAIS PATCH: pairing key argument"
   );
   source = replaceOnce(
     source,
     "derivePairingCodeKey(authState.creds.pairingCode, salt)",
-    "derivePairingCodeKey(pairingCode, salt)",
+    "derivePairingCodeKey(pairingCode, salt) /* ENCONTRE MAIS PATCH: isolated pairing key */",
     "ENCONTRE MAIS PATCH: isolated pairing key"
   );
 
