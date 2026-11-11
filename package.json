@@ -10,17 +10,18 @@
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "postinstall": "node scripts/patch-baileys.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.0",
-    "@whiskeysockets/baileys": "6.7.24",
     "dotenv": "^16.4.7",
     "express": "^5.1.0",
     "helmet": "^8.1.0",
     "pino": "^9.5.0",
     "qrcode": "^1.5.4",
-    "zod": "^4.6.7"
+    "zod": "^4.6.7",
+    "@chaeulso/baileys": "7.5.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.3",
