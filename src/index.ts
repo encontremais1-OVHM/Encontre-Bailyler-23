@@ -82,8 +82,12 @@ app.post("/v1/session/logout",...secure,async(_req,res)=>{
   catch(e){res.status(500).json({ok:false,error:"logout_failed",message:e instanceof Error?e.message:"Unknown error"});}
 });
 app.get("/v1/community",...secure,async(_req,res)=>{
-  try{const c=await getCommunity(env.COMMUNITY_JID);res.json({ok:true,data:{id:c.id,subject:c.subject,isCommunity:c.isCommunity,participantCount:c.participants.length,connectedAccount:status().phone}});}
-  catch(e){res.status(502).json({ok:false,error:"community_unavailable",message:e instanceof Error?e.message:"Unknown error"});}
+  try{
+    const c=await getCommunity(env.COMMUNITY_JID);
+    const self=String(status().phone||"").split(":")[0];
+    const isAdmin=c.participants.some(p=>String(p.id).split("@")[0].split(":")[0]===self&&(p.admin==="admin"||p.admin==="superadmin"));
+    res.json({ok:true,data:{id:c.id,subject:c.subject,isCommunity:c.isCommunity,participantCount:c.participants.length,connectedAccount:status().phone,isAdmin}});
+  }catch(e){res.status(502).json({ok:false,error:"community_unavailable",message:e instanceof Error?e.message:"Unknown error"});}
 });
 app.get("/v1/communities",...secure,async(_req,res)=>{
   try{res.json({ok:true,data:{communities:await listCommunities(env.COMMUNITY_JID)}});}
