@@ -61,7 +61,8 @@ export async function connect(next?:Options):Promise<void>{
 }
 function requireSocket(){if(!sock||connectionState!=="open")throw new Error("WhatsApp session is not connected");return sock;}
 export async function pairing(phone:string){
-  const wa=requireSocket();
+  const wa=sock;
+  if(!wa)throw new Error("Start the WhatsApp connection before requesting a pairing code");
   if(registered)throw new Error("This WhatsApp session is already paired");
   const code=await wa.requestPairingCode(phone);
   pairingCode=code;qr=null;return code;
