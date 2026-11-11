@@ -50,7 +50,7 @@ async function forwardParticipantEvents(payload:any){
     };
     const raw=JSON.stringify(event);
     const signature=createHmac("sha256",secret).update(raw).digest("hex");
-    const response=await fetch(env.SUPABASE_URL.replace(/\\/+$/,"")+"/functions/v1/whatsapp-confirmation",{
+    const response=await fetch(env.SUPABASE_URL.replace(/\/+$/,"")+"/functions/v1/whatsapp-confirmation",{
       method:"POST",headers:{"content-type":"application/json","x-encontre-signature":signature},body:raw
     });
     if(!response.ok)console.error("Supabase participant event rejected",response.status,(await response.text()).slice(0,300));
@@ -113,7 +113,7 @@ app.get("/v1/groups/:jid/profile-picture",...secure,async(req,res)=>{
   catch(e){res.status(502).json({ok:false,error:"profile_picture_unavailable",message:e instanceof Error?e.message:"Unknown error"});}
 });
 app.post("/v1/messages/send",...secure,async(req,res)=>{
-  const parsed=z.object({phoneNumber:z.string().regex(/^\\+?[1-9]\\d{7,14}$/),message:z.string().min(1).max(4000)}).safeParse(req.body);
+  const parsed=z.object({phoneNumber:z.string().regex(/^\+?[1-9]\d{7,14}$/),message:z.string().min(1).max(4000)}).safeParse(req.body);
   if(!parsed.success){res.status(400).json({ok:false,error:"invalid_message_request"});return;}
   try{res.json({ok:true,data:await sendTextMessage(parsed.data.phoneNumber,parsed.data.message)});}
   catch(e){res.status(502).json({ok:false,error:"message_send_failed",message:e instanceof Error?e.message:"Unknown error"});}
