@@ -2,12 +2,15 @@
 
 Serviço independente para ligar uma conta WhatsApp ao WhatsApp Web através de **Baileys** (API não oficial). Não utiliza Meta Cloud API.
 
-## Âmbito deliberadamente limitado
-Esta API tem apenas duas operações de negócio:
-1. Adicionar um número à **comunidade principal Encontre +**.
-2. Remover um número da **comunidade principal Encontre +**.
+## Âmbito da integração
+A API fornece a ligação WhatsApp e as operações técnicas usadas pelo painel Super Admin:
+- iniciar sessão, consultar estado, obter QR e código de emparelhamento, terminar sessão;
+- descobrir as Comunidades WhatsApp da conta ligada e os grupos internos associados;
+- consultar participantes, ligações de convite e imagens dos grupos;
+- adicionar/remover participantes na comunidade e nos subgrupos, exigindo que a conta ligada seja administradora;
+- enviar mensagens de notificação.
 
-Não cria grupos, não gere subgrupos e não decide assinaturas. A seleção dos subgrupos continua no frontend/fluxo de gestão já existente.
+A API não cria grupos e não decide assinaturas, pagamentos ou elegibilidade. Essas regras continuam no backend da plataforma e no Supabase. Apenas administradores podem criar/gerir grupos no WhatsApp.
 
 ## Stack
 - Node.js 22 + TypeScript + Express
@@ -28,9 +31,14 @@ Todas as rotas `/v1/*` exigem `x-api-key`.
 | GET | `/v1/session/qr` | Obter QR em texto e Data URL |
 | POST | `/v1/session/pairing-code` | Pedir código de associação |
 | POST | `/v1/session/logout` | Terminar sessão |
-| GET | `/v1/community` | Verificar comunidade configurada e conta ligada |
-| POST | `/v1/community/participants/add` | Adicionar um participante à comunidade |
-| POST | `/v1/community/participants/remove` | Remover um participante da comunidade |
+| GET | `/v1/community` | Verificar a comunidade principal configurada |
+| GET | `/v1/communities` | Descobrir comunidades e subgrupos da conta ligada |
+| GET | `/v1/groups/:jid/participants` | Consultar participantes |
+| POST | `/v1/groups/:jid/participants/add` | Submeter entrada num grupo/comunidade |
+| POST | `/v1/groups/:jid/participants/remove` | Submeter remoção de um grupo/comunidade |
+| GET | `/v1/groups/:jid/invite-link` | Obter ligação de convite |
+| GET | `/v1/groups/:jid/profile-picture` | Obter imagem do grupo |
+| POST | `/v1/messages/send` | Enviar mensagem WhatsApp |
 
 Exemplo de corpo para adicionar/remover: `{"phoneNumber":"+2449XXXXXXXX"}`.
 
@@ -45,7 +53,8 @@ A API usa o protocolo interno WhatsApp Web de comunidades (`w:g2`) através do s
 - O resultado da chamada de adição/remoção é apenas uma operação submetida. **Nunca ativa nem termina uma assinatura por si só.**
 - A privacidade do destinatário e as regras do WhatsApp podem impedir a inclusão direta; o serviço não transforma uma resposta de convite/recusa em adesão confirmada.
 - A remoção da comunidade pede também remoção dos grupos ligados (`linked_groups=true`), conforme o protocolo WhatsApp Web.
-- Os eventos reais `group.participants.update` são guardados no Supabase para reconciliação posterior.
+- Os eventos reais `group.participants.update` são assinados com HMAC e enviados para a Edge Function `whatsapp-confirmation`; a função valida a assinatura e confirma a adesão/remoção no Supabase.
+- Uma resposta HTTP de sucesso da operação nunca altera por si só o estado `joined`; a confirmação depende do evento real ou de reconciliação por snapshot.
 - A aplicação deve validar número, inscrição, assinatura, carência e grupo antes de atualizar o estado do membro.
 - A API key e a service-role key nunca podem ir para o browser. O frontend deverá chamar uma Supabase Edge Function/backend que autentique o utilizador e autorize a operação.
 
@@ -57,7 +66,7 @@ Copiar `.env.example`:
 - `COMMUNITY_JID` — ID WhatsApp da comunidade principal, formato `...@g.us`
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
-- `SUPABASE_EVENTS_TABLE=whatsapp_web_events`
+- A tabela antiga `whatsapp_web_events` já não é usada por esta versão; os eventos seguem para a Edge Function existente `whatsapp-confirmation`.
 
 Aplicar manualmente `supabase/whatsapp-web-events.sql` no projeto Supabase externo depois de rever. Não altera tabelas de membros ou assinaturas.
 
