@@ -91,7 +91,7 @@ app.get("/v1/communities",...secure,async(_req,res)=>{
   catch(e){res.status(502).json({ok:false,error:"communities_unavailable",message:e instanceof Error?e.message:"Unknown error"});}
 });
 app.get("/v1/groups/:jid/participants",...secure,async(req,res)=>{
-  try{res.json({ok:true,data:{participants:await groupParticipants(req.params.jid,env.COMMUNITY_JID)}});}
+  try{res.json({ok:true,data:{participants:await groupParticipants(String(req.params.jid),env.COMMUNITY_JID)}});}
   catch(e){res.status(502).json({ok:false,error:"participants_unavailable",message:e instanceof Error?e.message:"Unknown error"});}
 });
 for(const action of ["add","remove"] as const){
@@ -99,17 +99,17 @@ for(const action of ["add","remove"] as const){
     const parsed=participantBody.safeParse(req.body);
     if(!parsed.success){res.status(400).json({ok:false,error:"invalid_phone_number"});return;}
     try{
-      const result=await groupParticipantAction(req.params.jid,parsed.data.phoneNumber,action,env.COMMUNITY_JID);
+      const result=await groupParticipantAction(String(req.params.jid),parsed.data.phoneNumber,action,env.COMMUNITY_JID);
       res.status(result.status==="request_submitted"?202:200).json({ok:true,data:result,confirmation:"A resposta da operação não é prova de alteração de participação. Aguarde o evento real do WhatsApp ou reconcilie a lista de participantes."});
     }catch(e){res.status(502).json({ok:false,error:"group_participant_operation_failed",message:e instanceof Error?e.message:"Unknown error"});}
   });
 }
 app.get("/v1/groups/:jid/invite-link",...secure,async(req,res)=>{
-  try{res.json({ok:true,data:{inviteLink:await groupInviteLink(req.params.jid)}});}
+  try{res.json({ok:true,data:{inviteLink:await groupInviteLink(String(req.params.jid))}});}
   catch(e){res.status(502).json({ok:false,error:"invite_link_unavailable",message:e instanceof Error?e.message:"Unknown error"});}
 });
 app.get("/v1/groups/:jid/profile-picture",...secure,async(req,res)=>{
-  try{res.json({ok:true,data:{profilePictureUrl:await groupProfilePicture(req.params.jid)}});}
+  try{res.json({ok:true,data:{profilePictureUrl:await groupProfilePicture(String(req.params.jid))}});}
   catch(e){res.status(502).json({ok:false,error:"profile_picture_unavailable",message:e instanceof Error?e.message:"Unknown error"});}
 });
 app.post("/v1/messages/send",...secure,async(req,res)=>{
