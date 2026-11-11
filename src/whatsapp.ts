@@ -48,7 +48,7 @@ export async function connect(next?:Options):Promise<void>{
       if(u.connection==="close"){
         const code=(u.lastDisconnect?.error as any)?.output?.statusCode;
         const loggedOut=code===DisconnectReason.loggedOut;
-        connectionState=loggedOut?"logged_out":"disconnected";sock=null;
+        connectionState=loggedOut?"logged_out":"disconnected";sock=null;qr=null;pairingCode=null;
         if(!loggedOut&&options&&!reconnectTimer){
           reconnectTimer=setTimeout(()=>{reconnectTimer=null;void connect().catch(e=>logger.error(e,"Reconnect failed"));},5000);
         }
@@ -61,8 +61,15 @@ export async function connect(next?:Options):Promise<void>{
 }
 function requireSocket(){if(!sock||connectionState!=="open")throw new Error("WhatsApp session is not connected");return sock;}
 export async function pairing(phone:string){
+  if(!sock&&!connecting)await connect();
+  // The service starts the socket asynchronously. Wait briefly if the admin
+  // requests a phone pairing code while that startup is still in progress.
+  if(!sock&&connecting){
+    const deadline=Date.now()+15000;
+    while(!sock&&connecting&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,100));
+  }
   const wa=sock;
-  if(!wa)throw new Error("Start the WhatsApp connection before requesting a pairing code");
+  if(!wa)throw new Error("WhatsApp connection is still starting. Try generating the pairing code again in a moment.");
   if(registered)throw new Error("This WhatsApp session is already paired");
   const code=await wa.requestPairingCode(phone);
   pairingCode=code;qr=null;return code;
