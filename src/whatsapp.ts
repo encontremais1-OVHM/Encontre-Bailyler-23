@@ -77,6 +77,7 @@ export function socket(){return requireSocket();}
 type CommunityMetadata={id:string;subject:string;isCommunity:boolean;participants:Array<{id:string;admin?:string|null}>};
 function child(node:any,tag:string){return (node?.content??[]).find((item:any)=>item?.tag===tag);}
 function children(node:any,tag:string){return (node?.content??[]).filter((item:any)=>item?.tag===tag);}
+function phoneFromJid(jid:string){return jid.split("@")[0].split(":")[0];}
 async function communityQuery(jid:string,type:"get"|"set",content:any[]){
   const wa=requireSocket() as any;
   if(typeof wa.query!=="function")throw new Error("This Baileys build does not expose the required WhatsApp community protocol query");
@@ -99,15 +100,15 @@ export async function getCommunity(jid:string):Promise<CommunityMetadata>{
 export async function participantAction(jid:string,phone:string,action:"add"|"remove"){
   const wa=requireSocket() as any;
   const meta=await getCommunity(jid);
-  const self=String(wa.user?.id??"").split(":")[0];
-  const admin=meta.participants.some(p=>p.id.split(":")[0]===self&&(p.admin==="admin"||p.admin==="superadmin"));
+  const self=phoneFromJid(String(wa.user?.id??""));
+  const admin=meta.participants.some(p=>phoneFromJid(p.id)===self&&(p.admin==="admin"||p.admin==="superadmin"));
   if(!admin)throw new Error("The connected WhatsApp account is not an administrator of the configured community");
   const normalized=phone.replace(/\D/g,"");
   const [existence]=await wa.onWhatsApp(normalized);
   if(!existence?.exists||!existence.jid)throw new Error("The supplied phone number is not registered on WhatsApp");
   const target=String(existence.jid);
-  if(action==="remove" && target.split("@")[0]===self) throw new Error("The connected administrator account cannot remove itself from its community");
-  const already=meta.participants.some(p=>p.id===target||p.id.split(":")[0]===normalized);
+  if(action==="remove" && phoneFromJid(target)===self) throw new Error("The connected administrator account cannot remove itself from its community");
+  const already=meta.participants.some(p=>p.id===target||phoneFromJid(p.id)===normalized);
   if(action==="add"&&already)return {phone:normalized,action,status:"already_member",jid:target};
   if(action==="remove"&&!already)return {phone:normalized,action,status:"not_member",jid:target};
   const response=await communityQuery(jid,"set",[{
