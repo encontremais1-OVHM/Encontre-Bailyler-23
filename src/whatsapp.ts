@@ -186,7 +186,9 @@ export async function groupParticipants(jid:string,configuredJid:string){
 
 export async function groupParticipantAction(jid:string,phone:string,action:"add"|"remove",configuredJid:string){
   const wa=requireSocket() as any;
-  try{await getCommunity(jid);return participantAction(jid,phone,action);}catch{}
+  let isCommunity=false;
+  try{await getCommunity(jid);isCommunity=true;}catch{}
+  if(isCommunity)return participantAction(jid,phone,action);
   const metadata:any=await wa.groupMetadata(jid);
   const self=phoneFromJid(String(wa.user?.id??""));
   const selfParticipant=(metadata.participants||[]).find((p:any)=>phoneFromJid(String(p.id||""))===self);
