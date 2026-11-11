@@ -32,6 +32,13 @@ await patchFile("lib/Socket/socket.js", (original) => {
     "ENCONTRE MAIS PATCH: keep pending phone pairing in registration mode."
   );
 
+  source = replaceOnce(
+    source,
+    "                await waitForHandshake();",
+    "                await waitForHandshake();\\n                // ENCONTRE MAIS PATCH: stop the QR timer when switching to phone-code pairing.\\n                clearTimeout(qrTimer);\\n                qrTimer = undefined;",
+    "ENCONTRE MAIS PATCH: stop QR timer when phone pairing starts"
+  );
+
   const oldStart = "                authState.creds.pairingCode = pairingCode;";
   const oldEndText = "                return authState.creds.pairingCode;";
   const start = source.indexOf(oldStart);
