@@ -15,7 +15,6 @@ const env=z.object({
   COMMUNITY_JID:z.string().regex(/^\d+(?:-\d+)?@g\.us$/),
   SUPABASE_URL:z.string().url(),
   SUPABASE_SERVICE_ROLE_KEY:z.string().min(1),
-  SUPABASE_EVENTS_TABLE:z.string().default("whatsapp_web_events")
 }).parse(process.env);
 const db=createClient(env.SUPABASE_URL,env.SUPABASE_SERVICE_ROLE_KEY,{auth:{persistSession:false,autoRefreshToken:false}});
 const app=express();app.disable("x-powered-by");app.use(helmet());app.use(express.json({limit:"256kb"}));
