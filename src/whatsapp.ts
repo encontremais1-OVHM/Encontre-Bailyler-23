@@ -129,3 +129,106 @@ export async function participantAction(jid:string,phone:string,action:"add"|"re
   if(waStatus!=="200")throw new Error("WhatsApp rejected the community "+action+" operation (status "+waStatus+")");
   return {phone:normalized,action,status:"request_submitted",jid:target,whatsappStatus:waStatus,removesFromLinkedGroups:action==="remove"};
 }
+
+export async function listCommunities(configuredJid:string){
+  const wa=requireSocket() as any;
+  const fetched=await wa.groupFetchAllParticipating();
+  const groups=Object.values(fetched||{}) as any[];
+  const byId=new Map(groups.filter(g=>g?.id).map(g=>[String(g.id),g]));
+  if(configuredJid && !byId.has(configuredJid)){
+    const configured=await getCommunity(configuredJid);
+    byId.set(configuredJid,{id:configuredJid,subject:configured.subject,isCommunity:true,participants:configured.participants});
+  }
+  const communityGroups=[...byId.values()].filter(g=>g.isCommunity===true || String(g.id)===configuredJid);
+  const result=[];
+  for(const group of communityGroups){
+    const id=String(group.id);
+    let meta:any=group;
+    if(id===configuredJid){
+      try{meta={...group,...await getCommunity(id)};}catch{}
+    }
+    const subgroups=groups.filter(g=>String(g.linkedParent||"")===id);
+    const profile=await wa.profilePictureUrl(id,"image").catch(()=>null);
+    const childrenWithPictures=[];
+    for(const childGroup of subgroups){
+      const childPicture=await wa.profilePictureUrl(String(childGroup.id),"image").catch(()=>null);
+      childrenWithPictures.push({
+        id:String(childGroup.id),
+        subject:String(childGroup.subject||"Grupo WhatsApp"),
+        description:childGroup.desc?String(childGroup.desc):null,
+        profile_picture_url:childPicture||null,
+        linked_parent_id:id,
+      });
+    }
+    result.push({
+      id,
+      subject:String(meta.subject||group.subject||"Comunidade WhatsApp"),
+      description:meta.desc?String(meta.desc):null,
+      profile_picture_url:profile||null,
+      subgroups:childrenWithPictures,
+    });
+  }
+  return result;
+}
+
+export async function groupParticipants(jid:string,configuredJid:string){
+  const wa=requireSocket() as any;
+  const metadata:any=jid===configuredJid?await getCommunity(jid):await wa.groupMetadata(jid);
+  const participants=Array.isArray(metadata.participants)?metadata.participants:[];
+  return participants.map((p:any)=>({
+    id:String(p.id||p.jid||""),
+    jid:String(p.id||p.jid||""),
+    admin:Boolean(p.admin==="admin"||p.admin==="superadmin"),
+    name:p.name?String(p.name):null,
+  }));
+}
+
+export async function groupParticipantAction(jid:string,phone:string,action:"add"|"remove",configuredJid:string){
+  if(jid===configuredJid)return participantAction(jid,phone,action);
+  const wa=requireSocket() as any;
+  const metadata:any=await wa.groupMetadata(jid);
+  const self=phoneFromJid(String(wa.user?.id??""));
+  const selfParticipant=(metadata.participants||[]).find((p:any)=>phoneFromJid(String(p.id||""))===self);
+  if(!selfParticipant||!(selfParticipant.admin==="admin"||selfParticipant.admin==="superadmin")){
+    throw new Error("The connected WhatsApp account is not an administrator of this group");
+  }
+  const normalized=phone.replace(/\\D/g,"");
+  if(!/^\\d{8,15}$/.test(normalized))throw new Error("Invalid WhatsApp phone number");
+  const [existence]=await wa.onWhatsApp(normalized);
+  if(!existence?.exists||!existence.jid)throw new Error("The supplied phone number is not registered on WhatsApp");
+  const target=String(existence.jid);
+  if(action==="remove"&&phoneFromJid(target)===self)throw new Error("The connected administrator account cannot remove itself");
+  const existing=(metadata.participants||[]).find((p:any)=>phoneFromJid(String(p.id||""))===normalized);
+  if(action==="remove"&&existing&&(existing.admin==="admin"||existing.admin==="superadmin")){
+    throw new Error("Refusing to remove a group administrator");
+  }
+  if(action==="add"&&existing)return {phone:normalized,action,status:"already_member",jid:target};
+  if(action==="remove"&&!existing)return {phone:normalized,action,status:"not_member",jid:target};
+  const response=await wa.groupParticipantsUpdate(jid,[target],action);
+  const result=Array.isArray(response)?response[0]:null;
+  if(!result||String(result.status||"200")!=="200")throw new Error("WhatsApp did not accept the group participant operation");
+  return {phone:normalized,action,status:"request_submitted",jid:target,whatsappStatus:String(result.status||"200")};
+}
+
+export async function groupInviteLink(jid:string){
+  const wa=requireSocket() as any;
+  const code=await wa.groupInviteCode(jid);
+  if(!code)throw new Error("WhatsApp did not return an invite code");
+  return "https://chat.whatsapp.com/"+code;
+}
+
+export async function groupProfilePicture(jid:string){
+  const wa=requireSocket() as any;
+  return await wa.profilePictureUrl(jid,"image").catch(()=>null);
+}
+
+export async function sendTextMessage(phone:string,message:string){
+  const wa=requireSocket() as any;
+  const normalized=phone.replace(/\\D/g,"");
+  if(!/^\\d{8,15}$/.test(normalized))throw new Error("Invalid WhatsApp phone number");
+  if(!message.trim())throw new Error("Message cannot be empty");
+  const [existence]=await wa.onWhatsApp(normalized);
+  if(!existence?.exists||!existence.jid)throw new Error("The supplied phone number is not registered on WhatsApp");
+  const result=await wa.sendMessage(String(existence.jid),{text:message});
+  return {status:"submitted",messageId:result?.key?.id||null};
+}
