@@ -107,7 +107,7 @@ await patchFile("lib/Socket/socket.js", (original) => {
   source = replaceOnce(
     source,
     "    async function generatePairingKey() {",
-    "    // ENCONTRE MAIS PATCH: derive key from request-local code.\\n    async function generatePairingKey(pairingCode) {",
+    "    // ENCONTRE MAIS PATCH: derive key from request-local code.\n    async function generatePairingKey(pairingCode) {",
     "ENCONTRE MAIS PATCH: pairing key argument"
   );
   source = replaceOnce(
