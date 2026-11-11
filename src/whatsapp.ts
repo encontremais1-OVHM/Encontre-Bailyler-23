@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import makeWASocket, { DisconnectReason, useMultiFileAuthState, fetchLatestBaileysVersion, type WASocket } from "@whiskeysockets/baileys";
+import makeWASocket, { Browsers, DisconnectReason, useMultiFileAuthState, resolveWaWebVersion, type WASocket } from "@chaeulso/baileys";
 import pino from "pino";
 
 export type WaEventHandler=(type:string,payload:unknown)=>Promise<void>|void;
@@ -13,9 +13,11 @@ let qr:string|null=null;
 let pairingCode:string|null=null;
 let reconnectTimer:ReturnType<typeof setTimeout>|null=null;
 let registered=false;
+let lastError:string|null=null;
+let reconnectAttempt=0;
 
 export function status(){
-  return {state:connectionState,connected:connectionState==="open",phone:sock?.user?.id?.split(":")[0]??null,name:sock?.user?.name??null,registered};
+  return {state:connectionState,connected:connectionState==="open",phone:sock?.user?.id?.split(":")[0]??null,name:sock?.user?.name??null,registered,lastError};
 }
 export const currentQr=()=>qr;
 export const currentPairingCode=()=>pairingCode;
@@ -24,15 +26,17 @@ export async function connect(next?:Options):Promise<void>{
   if(next) options=next;
   if(!options) throw new Error("WhatsApp connection options not configured");
   if(connecting||connectionState==="open") return;
-  connecting=true; connectionState="connecting";
+  connecting=true; connectionState="connecting";lastError=null;
   try{
     await fs.mkdir(options.authDir,{recursive:true});
     const {state,saveCreds}=await useMultiFileAuthState(options.authDir);
     registered=state.creds.registered;
-    const {version}=await fetchLatestBaileysVersion();
+    const versionResult=await resolveWaWebVersion({cachePath:path.join(options.authDir,"wa-version.json")});
+    const version=versionResult.version;
+    logger.info({version,source:versionResult.source,isLatest:versionResult.isLatest},"WhatsApp Web protocol version selected");
     const wa=makeWASocket({
       version,auth:state,logger:logger.child({module:"baileys"}),
-      browser:["Encontre Mais","Chrome","1.0.0"],
+      // Use a recognised browser descriptor. WhatsApp rejects product-branded platform labels during phone pairing.\n      browser:Browsers.macOS("Chrome"),
       printQRInTerminal:false,markOnlineOnConnect:false,syncFullHistory:false,
       generateHighQualityLinkPreview:false,
     });
@@ -42,21 +46,26 @@ export async function connect(next?:Options):Promise<void>{
       if(u.qr){qr=u.qr;pairingCode=null;connectionState="qr";}
       if(u.connection==="connecting")connectionState="connecting";
       if(u.connection==="open"){
-        connectionState="open";qr=null;pairingCode=null;
+        connectionState="open";qr=null;pairingCode=null;lastError=null;reconnectAttempt=0;
         void options?.onEvent("connection.open",{jid:wa.user?.id??null,phone:wa.user?.id?.split(":")[0]??null});
       }
       if(u.connection==="close"){
-        const code=(u.lastDisconnect?.error as any)?.output?.statusCode;
+        const disconnectError=u.lastDisconnect?.error as any;
+        const code=disconnectError?.output?.statusCode;
+        lastError=disconnectError?.message || "WhatsApp connection closed"+(code?" (code "+code+")":"");
+        logger.warn({statusCode:code,error:lastError},"WhatsApp connection closed");
         const loggedOut=code===DisconnectReason.loggedOut;
         connectionState=loggedOut?"logged_out":"disconnected";sock=null;qr=null;pairingCode=null;
         if(!loggedOut&&options&&!reconnectTimer){
-          reconnectTimer=setTimeout(()=>{reconnectTimer=null;void connect().catch(e=>logger.error(e,"Reconnect failed"));},5000);
+          const delay=Math.min(5000*Math.pow(2,reconnectAttempt),60000);
+          reconnectAttempt+=1;
+          reconnectTimer=setTimeout(()=>{reconnectTimer=null;void connect().catch(e=>logger.error(e,"Reconnect failed"));},delay);
         }
       }
     });
     wa.ev.on("group-participants.update",e=>void options?.onEvent("group.participants.update",e));
     wa.ev.on("groups.update",e=>void options?.onEvent("groups.update",e));
-  }catch(e){connectionState="disconnected";throw e;}
+  }catch(e){connectionState="disconnected";lastError=e instanceof Error?e.message:"WhatsApp startup failed";throw e;}
   finally{connecting=false;}
 }
 function requireSocket(){if(!sock||connectionState!=="open")throw new Error("WhatsApp session is not connected");return sock;}
