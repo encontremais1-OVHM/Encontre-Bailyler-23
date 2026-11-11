@@ -25,7 +25,6 @@ function auth(req:Request,res:Response,next:NextFunction){
 }
 const secure=[auth];
 async function saveEvent(type:string,payload:unknown){
-  const stable=JSON.stringify({type,payload});
   const id=crypto.randomUUID();
   const {error}=await db.from(env.SUPABASE_EVENTS_TABLE).upsert({
     provider:"baileys_whatsapp_web",event_type:type,external_event_id:id,payload,
@@ -38,7 +37,7 @@ void connect({authDir:path.resolve(env.AUTH_DIR),onEvent:async(type,payload)=>{
   try{await saveEvent(type,payload);}catch(e){console.error("Supabase event persistence failed",type,e);}
 }}).catch(e=>console.error("WhatsApp startup failed",e));
 
-app.get("/health",(_req,res)=>res.json({ok:true,service:"encontre-mais-community-whatsapp-api",provider:"baileys-whatsapp-web",whatsapp:status()}));
+app.get("/health",(_req,res)=>res.json({ok:true,service:"encontre-mais-community-whatsapp-api",provider:"baileys-whatsapp-web",whatsapp:{state:status().state,connected:status().connected}}));
 app.get("/v1/session",...secure,(_req,res)=>res.json({ok:true,data:{...status(),qrAvailable:Boolean(currentQr()),pairingCode:currentPairingCode()}}));
 app.post("/v1/session/connect",...secure,async(_req,res)=>{
   try{await connect();res.status(202).json({ok:true,data:status()});}
