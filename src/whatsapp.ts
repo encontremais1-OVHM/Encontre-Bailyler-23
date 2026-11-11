@@ -106,6 +106,7 @@ export async function participantAction(jid:string,phone:string,action:"add"|"re
   const [existence]=await wa.onWhatsApp(normalized);
   if(!existence?.exists||!existence.jid)throw new Error("The supplied phone number is not registered on WhatsApp");
   const target=String(existence.jid);
+  if(action==="remove" && target.split("@")[0]===self) throw new Error("The connected administrator account cannot remove itself from its community");
   const already=meta.participants.some(p=>p.id===target||p.id.split(":")[0]===normalized);
   if(action==="add"&&already)return {phone:normalized,action,status:"already_member",jid:target};
   if(action==="remove"&&!already)return {phone:normalized,action,status:"not_member",jid:target};
