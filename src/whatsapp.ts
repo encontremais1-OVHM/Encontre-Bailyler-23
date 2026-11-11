@@ -173,7 +173,8 @@ export async function listCommunities(configuredJid:string){
 
 export async function groupParticipants(jid:string,configuredJid:string){
   const wa=requireSocket() as any;
-  const metadata:any=jid===configuredJid?await getCommunity(jid):await wa.groupMetadata(jid);
+  let metadata:any;
+  try{metadata=await getCommunity(jid);}catch{metadata=await wa.groupMetadata(jid);}
   const participants=Array.isArray(metadata.participants)?metadata.participants:[];
   return participants.map((p:any)=>({
     id:String(p.id||p.jid||""),
@@ -184,8 +185,8 @@ export async function groupParticipants(jid:string,configuredJid:string){
 }
 
 export async function groupParticipantAction(jid:string,phone:string,action:"add"|"remove",configuredJid:string){
-  if(jid===configuredJid)return participantAction(jid,phone,action);
   const wa=requireSocket() as any;
+  try{await getCommunity(jid);return participantAction(jid,phone,action);}catch{}
   const metadata:any=await wa.groupMetadata(jid);
   const self=phoneFromJid(String(wa.user?.id??""));
   const selfParticipant=(metadata.participants||[]).find((p:any)=>phoneFromJid(String(p.id||""))===self);
