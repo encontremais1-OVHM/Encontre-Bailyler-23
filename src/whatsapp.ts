@@ -73,7 +73,7 @@ export async function logout(){
   if(options)await fs.rm(options.authDir,{recursive:true,force:true});
 }
 export function socket(){return requireSocket();}
-type CommunityMetadata={id:string;subject:string;participants:Array<{id:string;admin?:string|null}>};
+type CommunityMetadata={id:string;subject:string;isCommunity:boolean;participants:Array<{id:string;admin?:string|null}>};
 function child(node:any,tag:string){return (node?.content??[]).find((item:any)=>item?.tag===tag);}
 function children(node:any,tag:string){return (node?.content??[]).filter((item:any)=>item?.tag===tag);}
 async function communityQuery(jid:string,type:"get"|"set",content:any[]){
@@ -91,6 +91,7 @@ export async function getCommunity(jid:string):Promise<CommunityMetadata>{
   return {
     id:rawId.includes("@")?rawId:rawId+"@g.us",
     subject:String(community.attrs?.subject??""),
+    isCommunity:true,
     participants:children(community,"participant").map((p:any)=>({id:String(p.attrs?.jid??""),admin:p.attrs?.type??null}))
   };
 }
@@ -100,7 +101,7 @@ export async function participantAction(jid:string,phone:string,action:"add"|"re
   const self=String(wa.user?.id??"").split(":")[0];
   const admin=meta.participants.some(p=>p.id.split(":")[0]===self&&(p.admin==="admin"||p.admin==="superadmin"));
   if(!admin)throw new Error("The connected WhatsApp account is not an administrator of the configured community");
-  const normalized=phone.replace(/\\D/g,"");
+  const normalized=phone.replace(/\D/g,"");
   const [existence]=await wa.onWhatsApp(normalized);
   if(!existence?.exists||!existence.jid)throw new Error("The supplied phone number is not registered on WhatsApp");
   const target=String(existence.jid);
