@@ -35,7 +35,7 @@ await patchFile("lib/Socket/socket.js", (original) => {
   source = replaceOnce(
     source,
     "                await waitForHandshake();",
-    "                await waitForHandshake();\\n                // ENCONTRE MAIS PATCH: stop the QR timer when switching to phone-code pairing.\\n                clearTimeout(qrTimer);\\n                qrTimer = undefined;",
+    "                await waitForHandshake();\n                // ENCONTRE MAIS PATCH: stop the QR timer when switching to phone-code pairing.\n                clearTimeout(qrTimer);\n                qrTimer = undefined;",
     "ENCONTRE MAIS PATCH: stop QR timer when phone pairing starts"
   );
 
