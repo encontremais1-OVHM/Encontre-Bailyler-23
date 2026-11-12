@@ -53,6 +53,7 @@ export async function connect(next?:Options):Promise<void>{
       if(u.qr){qr=u.qr;pairingCode=null;connectionState="qr";}
       if(u.connection==="connecting")connectionState="connecting";
       if(u.connection==="open"){
+        communitySnapshotCache=null;communitySnapshotCooldownUntil=0;communitySnapshotInFlight=null;
         connectionState="open";qr=null;pairingCode=null;lastError=null;reconnectAttempt=0;
         void options?.onEvent("connection.open",{jid:wa.user?.id??null,phone:wa.user?.id?.split(":")[0]??null});
       }
@@ -62,6 +63,7 @@ export async function connect(next?:Options):Promise<void>{
         lastError=disconnectError?.message || "WhatsApp connection closed"+(code?" (code "+code+")":"");
         logger.warn({statusCode:code,error:lastError},"WhatsApp connection closed");
         const loggedOut=code===DisconnectReason.loggedOut;
+        communitySnapshotCache=null;communitySnapshotCooldownUntil=0;communitySnapshotInFlight=null;
         connectionState=loggedOut?"logged_out":"disconnected";sock=null;qr=null;pairingCode=null;
         if(!loggedOut&&options&&!reconnectTimer){
           // WhatsApp deliberately closes the stream with 515 after a device
