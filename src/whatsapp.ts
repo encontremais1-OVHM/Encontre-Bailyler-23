@@ -191,6 +191,17 @@ async function resolveWhatsAppParticipant(wa:any,phone:string){
   }
   return {normalized,target};
 }
+export async function resolveWhatsAppPhoneNumber(...identities:string[]):Promise<string|null>{
+  const wa=requireSocket() as any;
+  const aliases=await jidAliases(wa,...identities);
+  const phoneJid=[...aliases].find(isPnJid);
+  if(phoneJid)return phoneFromJid(phoneJid);
+  for(const identity of identities){
+    const value=String(identity||"").trim();
+    if(/^\d{8,15}$/.test(value))return value;
+  }
+  return null;
+}
 async function sameWhatsAppUser(wa:any,left:CommunityParticipant,rightJid:string){
   const leftAliases=await jidAliases(wa,left.id,left.phoneNumber,left.lid);
   const rightAliases=await jidAliases(wa,rightJid);
@@ -549,11 +560,16 @@ export async function groupParticipants(jid:string,configuredJid:string){
   for(const p of participants){
     const id=String(p.id||p.jid||"");
     const aliases=await jidAliases(wa,id,p.phoneNumber,p.lid);
+    const phoneJid=[...aliases].find(isPnJid)||null;
+    const phoneNumber=phoneJid?phoneFromJid(phoneJid):null;
     const isOwner=[...aliases].some(alias=>ownerAliases.has(alias));
     const isAdmin=isOwner||p.admin==="admin"||p.admin==="superadmin"||p.isAdmin===true||p.isSuperAdmin===true;
     result.push({
       id,
-      jid:id,
+      // Expose the canonical PN JID when available. Downstream membership
+      // reconciliation must never mistake a numeric LID for a phone number.
+      jid:phoneJid||id,
+      phoneNumber,
       admin:Boolean(isAdmin),
       role:isOwner?"owner":isAdmin?"admin":"member",
       isOwner,
