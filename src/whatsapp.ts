@@ -180,6 +180,11 @@ export async function isSelfAdmin(participants:CommunityParticipant[]):Promise<b
   if(unresolvedParticipantIdentity)return null;
   return false;
 }
+async function communityQuery(jid:string,type:"get"|"set",content:any[]){
+  const wa=requireSocket() as any;
+  if(typeof wa.query!=="function")throw new Error("This Baileys build does not expose the required WhatsApp community protocol query");
+  return wa.query({tag:"iq",attrs:{type,xmlns:"w:g2",to:jid},content});
+}
 export async function getCommunity(jid:string):Promise<CommunityMetadata>{
   const wa=requireSocket() as any;
   // Baileys' groupMetadata uses the w:g2 interactive query and its maintained
