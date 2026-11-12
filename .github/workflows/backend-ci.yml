@@ -1,4 +1,4 @@
-name: Backend CI
+name: Backend CI # validates WhatsApp PN/LID participant targeting
 
 on:
   pull_request:
