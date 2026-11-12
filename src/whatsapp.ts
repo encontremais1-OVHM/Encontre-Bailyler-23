@@ -117,7 +117,7 @@ export async function logout(){
 }
 export function socket(){return requireSocket();}
 type CommunityParticipant={id:string;admin?:string|null;phoneNumber?:string|null;lid?:string|null;isAdmin?:boolean;isSuperAdmin?:boolean};
-type CommunityMetadata={id:string;subject:string;isCommunity:boolean;participants:CommunityParticipant[];owner:string|null;ownerPn:string|null};
+type CommunityMetadata={id:string;subject:string;isCommunity:boolean;addressingMode:string;participants:CommunityParticipant[];owner:string|null;ownerPn:string|null};
 function findNode(node:any,tag:string){return Array.isArray(node?.content)?node.content.find((item:any)=>item?.tag===tag)??null:null;}
 function findNodes(node:any,tag:string){return Array.isArray(node?.content)?node.content.filter((item:any)=>item?.tag===tag):[];}
 function normalizeJid(value:string){
@@ -199,6 +199,15 @@ async function resolveWhatsAppParticipant(wa:any,phone:string){
   }
   return {normalized,target};
 }
+async function participantJidForAddressingMode(wa:any,target:string,addressingMode:unknown){
+  if(String(addressingMode??"").toLowerCase()!=="lid")return target;
+  if(isLidJid(target))return target;
+  if(typeof wa.findUserId!=="function")throw new Error("WhatsApp community uses LID addressing, but this Baileys session cannot resolve the participant LID");
+  const mapped=await wa.findUserId(target);
+  const lid=typeof mapped?.lid==="string"?normalizeJid(mapped.lid):"";
+  if(!isLidJid(lid))throw new Error("WhatsApp community uses LID addressing, but the participant LID could not be resolved from the supplied phone number");
+  return lid;
+}
 export async function resolveWhatsAppPhoneNumber(...identities:string[]):Promise<string|null>{
   const wa=requireSocket() as any;
   const aliases=await jidAliases(wa,...identities);
@@ -276,6 +285,7 @@ function normalizeCommunityMetadata(metadata:any,jid:string):CommunityMetadata{
     id:returnedId,
     subject:String(metadata.subject??""),
     isCommunity:true,
+    addressingMode:String(metadata.addressingMode??"pn").toLowerCase(),
     owner:metadata.owner?String(metadata.owner):null,
     ownerPn:metadata.ownerPn?String(metadata.ownerPn):null,
     participants:metadata.participants.map((p:any)=>({
@@ -439,6 +449,7 @@ export async function participantAction(jid:string,phone:string,action:"add"|"re
   if(admin===null)throw new Error("The connected WhatsApp account's administrator permissions could not be verified because a PN/LID identity mapping is missing");
   if(!admin)throw new Error("The connected WhatsApp account is not an administrator of the configured community");
   const {normalized,target}=await resolveWhatsAppParticipant(wa,phone);
+  const writeTarget=await participantJidForAddressingMode(wa,target,meta.addressingMode);
   if(action==="remove" && await sameWhatsAppUser(wa,{id:String(wa.user?.id??"")},target)) throw new Error("The connected administrator account cannot remove itself from its community");
   if(action==="remove"){
     const ownerAliases=await jidAliases(wa,meta.owner,meta.ownerPn);
@@ -459,7 +470,7 @@ export async function participantAction(jid:string,phone:string,action:"add"|"re
   let waStatus="200";
   try {
     if(typeof wa.communityParticipantsUpdate==="function"){
-      const updates=await wa.communityParticipantsUpdate(communityJid,[target],action);
+      const updates=await wa.communityParticipantsUpdate(communityJid,[writeTarget],action);
       const update=Array.isArray(updates)?updates.find((item:any)=>normalizeJid(String(item.jid||""))===normalizeJid(target))??updates[0]:null;
       if(!update)throw new Error("WhatsApp returned no per-participant result; operation is not confirmed");
       waStatus=String(update.status??"200");
@@ -468,7 +479,7 @@ export async function participantAction(jid:string,phone:string,action:"add"|"re
         {
           tag:action,
           attrs:action==="remove"?{linked_groups:"true"}:{},
-          content:[{tag:"participant",attrs:{jid:target}}]
+          content:[{tag:"participant",attrs:{jid:writeTarget}}]
         }
       ]);
       const resultNode=findNode(response,action);
@@ -639,6 +650,7 @@ export async function groupParticipantAction(jid:string,phone:string,action:"add
     throw new Error("The connected WhatsApp account is not an administrator of this group");
   }
   const {normalized,target}=await resolveWhatsAppParticipant(wa,phone);
+  const writeTarget=await participantJidForAddressingMode(wa,target,metadata.addressingMode);
   if(action==="remove"&&await sameWhatsAppUser(wa,{id:String(wa.user?.id??"")},target))throw new Error("The connected administrator account cannot remove itself");
   let existing:any;
   for(const participant of (metadata.participants||[])){
@@ -649,7 +661,7 @@ export async function groupParticipantAction(jid:string,phone:string,action:"add
   }
   if(action==="add"&&existing)return {phone:normalized,action,status:"already_member",jid:target};
   if(action==="remove"&&!existing)return {phone:normalized,action,status:"not_member",jid:target};
-  const response=await wa.groupParticipantsUpdate(normalizedJid,[target],action);
+  const response=await wa.groupParticipantsUpdate(normalizedJid,[writeTarget],action);
   const result=Array.isArray(response)?response[0]:null;
   const resultStatus=String(result?.status||"200");
   if(action==="add"&&resultStatus==="409"){
