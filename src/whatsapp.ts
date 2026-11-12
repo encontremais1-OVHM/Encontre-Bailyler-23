@@ -225,31 +225,156 @@ function normalizeCommunityMetadata(metadata:any,jid:string):CommunityMetadata{
     })).filter((p:CommunityParticipant)=>Boolean(p.id))
   };
 }
+type CommunitySnapshot={groups:any[];exact:any|null;communityCandidates:any[];linkedChildren:any[];communityFetchCount:number;communityFetchError:string|null};
+async function fetchCommunitySnapshot(wa:any,jid:string):Promise<CommunitySnapshot>{
+  const byId=new Map<string,any>();
+  let communityFetchError:string|null=null;
+  let communityFetchCount=0;
+  // The library exposes a dedicated community list as well as the general
+  // participating-groups list. Prefer to merge both because some WhatsApp
+  // sessions return child groups in the latter but the root only in the former.
+  if(typeof wa.communityFetchAllParticipating==="function"){
+    try{
+      const communities=await wa.communityFetchAllParticipating();
+      const communityItems=Object.values(communities||{}) as any[];
+      communityFetchCount=communityItems.filter((item:any)=>item?.isCommunity===true).length;
+      for(const item of communityItems){
+        if(item?.id)byId.set(normalizeJid(String(item.id)),item);
+      }
+    }catch(error){
+      communityFetchError=error instanceof Error?error.message:String(error);
+      logger.warn({error:communityFetchError},"Baileys communityFetchAllParticipating failed; using participating groups");
+    }
+  }
+  const fetched=await wa.groupFetchAllParticipating();
+  for(const item of Object.values(fetched||{}) as any[]){
+    if(item?.id){
+      const id=normalizeJid(String(item.id));
+      byId.set(id,{...(byId.get(id)||{}),...item});
+    }
+  }
+  const groups=[...byId.values()];
+  const normalized=normalizeJid(jid);
+  return {
+    groups,
+    exact:groups.find((item:any)=>normalizeJid(String(item.id))===normalized)??null,
+    communityCandidates:groups.filter((item:any)=>item.isCommunity===true),
+    linkedChildren:groups.filter((item:any)=>normalizeJid(String(item.linkedParent||""))===normalized),
+    communityFetchCount,
+    communityFetchError,
+  };
+}
+function metadataFailure(error:unknown){
+  const statusCode=(error as any)?.output?.statusCode??(error as any)?.statusCode??null;
+  const message=error instanceof Error?error.message:String(error??"unknown error");
+  return {statusCode,message};
+}
 export async function getCommunity(jid:string):Promise<CommunityMetadata>{
   const wa=requireSocket() as any;
-  let liveError:unknown=null;
-  // Preferred path: Baileys' w:g2 interactive groupMetadata query and its
-  // maintained extractGroupMetadata parser.
+  const configuredId=normalizeJid(jid);
+  let snapshot:CommunitySnapshot|null=null;
+  let snapshotError:unknown=null;
+  // Fetch the authenticated participating-groups snapshot first. It is often
+  // the only response that contains the root community on linked-device sessions.
+  try{snapshot=await fetchCommunitySnapshot(wa,configuredId);}
+  catch(error){snapshotError=error;}
+  // Exact configured id in the participating snapshot is authoritative.
+  if(snapshot?.exact?.isCommunity===true){
+    try{return normalizeCommunityMetadata(snapshot.exact,configuredId);}
+    catch(error){logger.warn({jid:configuredId,error:metadataFailure(error)},"Configured community snapshot could not be normalized");}
+  }
+  let directError:unknown=null;
+  let directMetadata:any=null;
   try{
     if(typeof wa.groupMetadata!=="function")throw new Error("This Baileys build does not expose groupMetadata");
-    return normalizeCommunityMetadata(await wa.groupMetadata(jid),jid);
-  }catch(error){liveError=error;}
-  // Some WhatsApp community sessions reject the individual metadata query
-  // (including transient 403/FORBIDDEN responses) while the participating
-  // groups query still carries the complete community metadata. Reuse only
-  // the exact configured JID returned by that authenticated socket query.
-  try{
-    if(typeof wa.groupFetchAllParticipating==="function"){
-      const fetched=await wa.groupFetchAllParticipating();
-      const cached=Object.values(fetched||{}).find((item:any)=>normalizeJid(String(item?.id??""))===normalizeJid(jid));
-      if(cached)return normalizeCommunityMetadata(cached,jid);
+    directMetadata=await wa.groupMetadata(configuredId);
+    if(directMetadata?.isCommunity===true)return normalizeCommunityMetadata(directMetadata,configuredId);
+    // A stale COMMUNITY_JID may point to a subgroup. Baileys exposes its root
+    // community in linkedParent; resolve that id instead of treating the
+    // subgroup as the platform's main community.
+    const parent=normalizeJid(String(directMetadata?.linkedParent||""));
+    if(parent){
+      const parentSnapshot=snapshot?.groups.find((item:any)=>normalizeJid(String(item.id))===parent);
+      if(parentSnapshot?.isCommunity===true)return normalizeCommunityMetadata(parentSnapshot,parent);
+      try{
+        const parentMetadata=await wa.groupMetadata(parent);
+        if(parentMetadata?.isCommunity===true)return normalizeCommunityMetadata(parentMetadata,parent);
+      }catch(parentError){
+        logger.warn({configuredJid:configuredId,parentJid:parent,error:metadataFailure(parentError)},"Could not fetch linked parent community metadata");
+      }
     }
-  }catch(cacheError){
-    logger.warn({jid,liveError:liveError instanceof Error?liveError.message:String(liveError),cacheError:cacheError instanceof Error?cacheError.message:String(cacheError)},"WhatsApp community metadata live and participating queries failed");
+    directError=new Error("Configured COMMUNITY_JID resolved to a WhatsApp group, not the community root"+(parent?" (linked parent "+parent+")":""));
+  }catch(error){directError=error;}
+  // If the configured id is absent from the snapshot but WhatsApp returned
+  // exactly one community, use that authenticated, unambiguous community.
+  // Never choose arbitrarily when the linked account belongs to multiple communities.
+  if(snapshot?.communityCandidates.length===1){
+    const candidate=snapshot.communityCandidates[0];
+    logger.warn({configuredJid:configuredId,resolvedCommunityJid:normalizeJid(String(candidate.id)),snapshotGroupCount:snapshot.groups.length},"Configured community id did not match; using the only participating WhatsApp community");
+    return normalizeCommunityMetadata(candidate,String(candidate.id));
   }
-  const statusCode=(liveError as any)?.output?.statusCode??(liveError as any)?.statusCode;
-  const detail=liveError instanceof Error?liveError.message:"WhatsApp metadata query failed";
-  throw new Error("Could not retrieve WhatsApp community metadata"+(statusCode?" (HTTP "+statusCode+")":"")+": "+detail);
+  // If there are several candidates, the linked groups can still reveal a
+  // unique parent for the configured child group.
+  if(snapshot?.exact?.linkedParent){
+    const parent=normalizeJid(String(snapshot.exact.linkedParent));
+    const candidate=snapshot.communityCandidates.find((item:any)=>normalizeJid(String(item.id))===parent);
+    if(candidate)return normalizeCommunityMetadata(candidate,parent);
+  }
+  const candidates=snapshot?.communityCandidates.map((item:any)=>({
+    id:normalizeJid(String(item.id)),
+    subject:String(item.subject||""),
+    linkedParent:normalizeJid(String(item.linkedParent||""))||null,
+  }))??[];
+  logger.error({
+    configuredJid:configuredId,
+    snapshotGroupCount:snapshot?.groups.length??null,
+    exactSnapshotFound:Boolean(snapshot?.exact),
+    exactSnapshotIsCommunity:snapshot?.exact?.isCommunity??null,
+    exactSnapshotLinkedParent:snapshot?.exact?.linkedParent??null,
+    communityCandidates:candidates,
+    linkedChildrenCount:snapshot?.linkedChildren.length??0,
+    directError:metadataFailure(directError),
+    snapshotError:snapshotError?metadataFailure(snapshotError):null,
+  },"Unable to resolve configured WhatsApp community metadata");
+  const statusCode=(directError as any)?.output?.statusCode??(directError as any)?.statusCode;
+  const detail=directError instanceof Error?directError.message:"WhatsApp metadata query failed";
+  const snapshotDetail=snapshotError instanceof Error?"; participating groups query: "+snapshotError.message:"";
+  throw new Error("Could not resolve WhatsApp community metadata for "+configuredId+(statusCode?" (WhatsApp HTTP "+statusCode+")":"")+": "+detail+snapshotDetail+"; found "+candidates.length+" community candidate(s)");
+}
+export async function inspectCommunityDiscovery(jid:string){
+  const wa=requireSocket() as any;
+  const snapshot=await fetchCommunitySnapshot(wa,jid);
+  return {
+    configuredJid:normalizeJid(jid),
+    connectedJid:normalizeJid(String(wa.user?.id??""))||null,
+    groupCount:snapshot.groups.length,
+    communityFetchCount:snapshot.communityFetchCount,
+    communityFetchError:snapshot.communityFetchError,
+    exactMatch:snapshot.exact?{
+      id:normalizeJid(String(snapshot.exact.id)),
+      subject:String(snapshot.exact.subject||""),
+      isCommunity:snapshot.exact.isCommunity===true,
+      linkedParent:normalizeJid(String(snapshot.exact.linkedParent||""))||null,
+      participantCount:Array.isArray(snapshot.exact.participants)?snapshot.exact.participants.length:null,
+    }:null,
+    communities:snapshot.communityCandidates.map((item:any)=>({
+      id:normalizeJid(String(item.id)),
+      subject:String(item.subject||""),
+      participantCount:Array.isArray(item.participants)?item.participants.length:null,
+    })),
+    linkedChildren:snapshot.linkedChildren.map((item:any)=>({
+      id:normalizeJid(String(item.id)),
+      subject:String(item.subject||""),
+      linkedParent:normalizeJid(String(item.linkedParent||"")),
+    })),
+    methods:{
+      groupMetadata:typeof wa.groupMetadata==="function",
+      groupFetchAllParticipating:typeof wa.groupFetchAllParticipating==="function",
+      communityMetadata:typeof wa.communityMetadata==="function",
+      communityFetchAllParticipating:typeof wa.communityFetchAllParticipating==="function",
+      communityParticipantsUpdate:typeof wa.communityParticipantsUpdate==="function",
+    },
+  };
 }
 export async function participantAction(jid:string,phone:string,action:"add"|"remove"){
   const wa=requireSocket() as any;
@@ -277,19 +402,28 @@ export async function participantAction(jid:string,phone:string,action:"add"|"re
   }
   if(action==="add"&&already)return {phone:normalized,action,status:"already_member",jid:target};
   if(action==="remove"&&!already)return {phone:normalized,action,status:"not_member",jid:target};
-  const response=await communityQuery(jid,"set",[
-    {
-      tag:action,
-      attrs:action==="remove"?{linked_groups:"true"}:{},
-      content:[{tag:"participant",attrs:{jid:target}}]
-    }
-  ]);
-  const resultNode=findNode(response,action);
-  const participant=findNodes(resultNode,"participant").find((p:any)=>p.attrs?.jid===target);
-  if(!participant)throw new Error("WhatsApp returned no per-participant result; operation is not confirmed");
-  const waStatus=String(participant.attrs?.error??"200");
+  const communityJid=meta.id;
+  let waStatus="200";
+  if(typeof wa.communityParticipantsUpdate==="function"){
+    const updates=await wa.communityParticipantsUpdate(communityJid,[target],action);
+    const update=Array.isArray(updates)?updates.find((item:any)=>normalizeJid(String(item.jid||""))===normalizeJid(target))??updates[0]:null;
+    if(!update)throw new Error("WhatsApp returned no per-participant result; operation is not confirmed");
+    waStatus=String(update.status??"200");
+  }else{
+    const response=await communityQuery(communityJid,"set",[
+      {
+        tag:action,
+        attrs:action==="remove"?{linked_groups:"true"}:{},
+        content:[{tag:"participant",attrs:{jid:target}}]
+      }
+    ]);
+    const resultNode=findNode(response,action);
+    const participant=findNodes(resultNode,"participant").find((p:any)=>p.attrs?.jid===target);
+    if(!participant)throw new Error("WhatsApp returned no per-participant result; operation is not confirmed");
+    waStatus=String(participant.attrs?.error??"200");
+  }
   if(waStatus!=="200")throw new Error("WhatsApp rejected the community "+action+" operation (status "+waStatus+")");
-  return {phone:normalized,action,status:"request_submitted",jid:target,whatsappStatus:waStatus,removesFromLinkedGroups:action==="remove"};
+  return {phone:normalized,action,status:"request_submitted",jid:target,communityJid,whatsappStatus:waStatus,removesFromLinkedGroups:action==="remove"};
 }
 
 export async function listCommunities(configuredJid:string){
@@ -298,12 +432,14 @@ export async function listCommunities(configuredJid:string){
   const groups=Object.values(fetched||{}) as any[];
   const configuredId=normalizeJid(configuredJid);
   const byId=new Map(groups.filter(g=>g?.id).map(g=>[normalizeJid(String(g.id)),g]));
-  // If the configured community is omitted from the participating snapshot,
-  // ask WhatsApp for that exact JID. Never manufacture a fake "community"
-  // entry from COMMUNITY_JID alone.
-  if(configuredId&&!byId.has(configuredId)){
-    try{const configured=await getCommunity(configuredId);byId.set(configuredId,configured);}
-    catch(error){logger.warn({jid:configuredId,error:error instanceof Error?error.message:String(error)},"Configured WhatsApp community was not present in participating groups");}
+  let resolvedConfigured:CommunityMetadata|null=null;
+  if(configuredId){
+    try{
+      resolvedConfigured=await getCommunity(configuredId);
+      byId.set(resolvedConfigured.id,resolvedConfigured);
+    }catch(error){
+      logger.warn({jid:configuredId,error:error instanceof Error?error.message:String(error)},"Could not resolve configured WhatsApp community from participating groups");
+    }
   }
   const communityGroups=[...byId.values()].filter(g=>g?.isCommunity===true);
   const result=[];
@@ -313,17 +449,9 @@ export async function listCommunities(configuredJid:string){
     let metadataSource:"live"|"participating_cache"="participating_cache";
     let adminStatus:"admin"|"not_admin"|"unknown"="unknown";
     let adminCheckError:string|null=null;
-    if(id===configuredId){
-      try{meta={...group,...await getCommunity(id)};metadataSource="live";}
-      catch(error){
-        // groupFetchAllParticipating is itself an authenticated WhatsApp query.
-        // If it supplied the actual community and participant roster, use that
-        // snapshot instead of failing solely because the per-JID query returned
-        // FORBIDDEN. Otherwise keep the role explicitly unknown.
-        if(!Array.isArray(group.participants)){
-          adminCheckError=error instanceof Error?error.message:"Community metadata could not be verified";
-        }
-      }
+    if(resolvedConfigured&&id===resolvedConfigured.id){
+      meta={...group,...resolvedConfigured};
+      metadataSource="live";
     }
     if(!adminCheckError&&Array.isArray(meta.participants)){
       try{const isAdmin=await isSelfAdmin(meta.participants,meta.owner,meta.ownerPn);adminStatus=isAdmin===null?"unknown":isAdmin?"admin":"not_admin";}
