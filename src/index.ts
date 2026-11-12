@@ -1,5 +1,5 @@
 import "dotenv/config";
-import crypto,{createHmac} from "node:crypto";
+import crypto,{createHmac,timingSafeEqual} from "node:crypto";
 import path from "node:path";
 import express,{type Request,type Response,type NextFunction} from "express";
 import helmet from "helmet";
@@ -17,7 +17,8 @@ const env=z.object({
   SUPABASE_SERVICE_ROLE_KEY:z.string().min(1),
 }).parse(process.env);
 const db=createClient(env.SUPABASE_URL,env.SUPABASE_SERVICE_ROLE_KEY,{auth:{persistSession:false,autoRefreshToken:false}});
-const app=express();app.disable("x-powered-by");app.use(helmet());app.use(express.json({limit:"256kb"}));
+type RawBodyRequest=Request&{rawBody?:Buffer};
+const app=express();app.disable("x-powered-by");app.use(helmet());app.use(express.json({limit:"256kb",verify:(req,_res,buffer)=>{(req as RawBodyRequest).rawBody=Buffer.from(buffer);}}));
 function auth(req:Request,res:Response,next:NextFunction){
   const a=Buffer.from(req.header("x-api-key")??"");const b=Buffer.from(env.SERVICE_API_KEY);
   if(a.length!==b.length||!crypto.timingSafeEqual(a,b)){res.status(401).json({ok:false,error:"unauthorized"});return;}next();
@@ -32,6 +33,77 @@ async function webhookSecret(){
   })();
   return webhookSecretPromise;
 }
+app.post("/internal/whatsapp/participants/add",async(req,res)=>{
+  try{
+    const raw=(req as RawBodyRequest).rawBody;
+    const supplied=String(req.header("x-encontre-signature")||"").toLowerCase();
+    if(!raw||!/^[a-f0-9]{64}$/.test(supplied)){
+      res.status(401).json({ok:false,error:"invalid_internal_signature"});
+      return;
+    }
+    const secret=await webhookSecret();
+    const expected=createHmac("sha256",secret).update(raw).digest();
+    const actual=Buffer.from(supplied,"hex");
+    if(actual.length!==expected.length||!timingSafeEqual(actual,expected)){
+      res.status(401).json({ok:false,error:"invalid_internal_signature"});
+      return;
+    }
+    const parsed=z.object({
+      event_id:z.string().min(1).max(128),
+      operation_id:z.string().uuid(),
+      group_id:z.string().endsWith("@g.us"),
+      group_type:z.enum(["community","subgroup"]),
+      phone:z.string().regex(/^\\d{8,15}$/),
+    }).safeParse(req.body);
+    if(!parsed.success){
+      res.status(422).json({ok:false,error:"invalid_internal_access_payload"});
+      return;
+    }
+    const payload=parsed.data;
+    const {data:operation,error:operationError}=await db.from("access_operations")
+      .select("id,member_id,whatsapp_group_id,operation_type,status")
+      .eq("id",payload.operation_id).maybeSingle();
+    if(operationError)throw operationError;
+    if(!operation||operation.operation_type!=="add"||operation.status!=="processing"){
+      res.status(409).json({ok:false,error:"access_operation_not_dispatchable"});
+      return;
+    }
+    const [groupResult,memberResult,membershipResult]=await Promise.all([
+      db.from("whatsapp_groups").select("id,external_group_id,group_type,is_active,sync_status")
+        .eq("id",operation.whatsapp_group_id).maybeSingle(),
+      db.from("members").select("id,phone_e164,phone").eq("id",operation.member_id).maybeSingle(),
+      db.from("group_memberships").select("id,status")
+        .eq("member_id",operation.member_id).eq("whatsapp_group_id",operation.whatsapp_group_id).maybeSingle(),
+    ]);
+    if(groupResult.error)throw groupResult.error;
+    if(memberResult.error)throw memberResult.error;
+    if(membershipResult.error)throw membershipResult.error;
+    const group=groupResult.data;
+    const member=memberResult.data;
+    const membership=membershipResult.data;
+    const storedPhone=String(member?.phone_e164||member?.phone||"").replace(/\\D/g,"");
+    if(!group||group.external_group_id!==payload.group_id||group.group_type!==payload.group_type||!group.is_active||
+       !member||storedPhone!==payload.phone||!membership||!["pending_invitation","invited","joined"].includes(membership.status)){
+      res.status(409).json({ok:false,error:"access_operation_context_mismatch"});
+      return;
+    }
+    if(membership.status==="joined"){
+      res.status(200).json({ok:true,data:{status:"already_member",phone:payload.phone,action:"add"}});
+      return;
+    }
+    const result=await groupParticipantAction(group.external_group_id,payload.phone,"add",env.COMMUNITY_JID);
+    if(result.status==="already_member"){
+      await forwardParticipantEvents({action:"add",id:group.external_group_id,participants:[result.jid]});
+      res.status(200).json({ok:true,data:result,confirmation:"Existing WhatsApp membership verified and reconciled."});
+      return;
+    }
+    res.status(202).json({ok:true,data:result,confirmation:"Request submitted; membership is pending the signed WhatsApp participant event."});
+  }catch(error){
+    console.error("Internal WhatsApp access operation failed",error instanceof Error?error.message:"unknown error");
+    res.status(502).json({ok:false,error:"internal_whatsapp_access_failed",message:error instanceof Error?error.message:"Unknown error"});
+  }
+});
+
 async function forwardParticipantEvents(payload:any){
   const action=String(payload?.action||"");
   if(!["add","remove"].includes(action))return;
