@@ -53,6 +53,7 @@ export async function connect(next?:Options):Promise<void>{
       if(u.qr){qr=u.qr;pairingCode=null;connectionState="qr";}
       if(u.connection==="connecting")connectionState="connecting";
       if(u.connection==="open"){
+        communitySnapshotCache=null;communitySnapshotCooldownUntil=0;communitySnapshotInFlight=null;
         connectionState="open";qr=null;pairingCode=null;lastError=null;reconnectAttempt=0;
         void options?.onEvent("connection.open",{jid:wa.user?.id??null,phone:wa.user?.id?.split(":")[0]??null});
       }
@@ -62,6 +63,7 @@ export async function connect(next?:Options):Promise<void>{
         lastError=disconnectError?.message || "WhatsApp connection closed"+(code?" (code "+code+")":"");
         logger.warn({statusCode:code,error:lastError},"WhatsApp connection closed");
         const loggedOut=code===DisconnectReason.loggedOut;
+        communitySnapshotCache=null;communitySnapshotCooldownUntil=0;communitySnapshotInFlight=null;
         connectionState=loggedOut?"logged_out":"disconnected";sock=null;qr=null;pairingCode=null;
         if(!loggedOut&&options&&!reconnectTimer){
           // WhatsApp deliberately closes the stream with 515 after a device
@@ -225,44 +227,33 @@ function normalizeCommunityMetadata(metadata:any,jid:string):CommunityMetadata{
     })).filter((p:CommunityParticipant)=>Boolean(p.id))
   };
 }
-type CommunitySnapshot={groups:any[];exact:any|null;communityCandidates:any[];linkedChildren:any[];communityFetchCount:number;communityFetchError:string|null};
+type CommunitySnapshot={groups:any[];exact:any|null;communityCandidates:any[];linkedChildren:any[];communityFetchCount:number;communityFetchError:string|null;groupFetchError?:string|null};
+let communitySnapshotCache:{socket:any;fetchedAt:number;snapshot:CommunitySnapshot}|null=null;
+let communitySnapshotInFlight:Promise<CommunitySnapshot>|null=null;
+let communitySnapshotCooldownUntil=0;
+const profilePictureCache=new Map<string,{url:string|null;expiresAt:number}>();
+const profilePictureInFlight=new Map<string,Promise<string|null>>();
+function isRateLimitError(error:unknown){const message=error instanceof Error?error.message:String(error??"");return /rate[-_ ]?overlimit|rate.?limit|too many requests|http.?429/i.test(message);}
+async function cachedProfilePictureUrl(wa:any,jid:string):Promise<string|null>{const key=normalizeJid(jid);const cached=profilePictureCache.get(key);if(cached&&cached.expiresAt>Date.now())return cached.url;const pending=profilePictureInFlight.get(key);if(pending)return pending;const task=Promise.resolve().then(()=>wa.profilePictureUrl(jid,"image")).then((url:any)=>typeof url==="string"?url:null).catch(()=>null).then((url)=>{profilePictureCache.set(key,{url,expiresAt:Date.now()+10*60*1000});return url;}).finally(()=>profilePictureInFlight.delete(key));profilePictureInFlight.set(key,task);return task;}
 async function fetchCommunitySnapshot(wa:any,jid:string):Promise<CommunitySnapshot>{
-  const byId=new Map<string,any>();
-  let communityFetchError:string|null=null;
-  let communityFetchCount=0;
-  // The library exposes a dedicated community list as well as the general
-  // participating-groups list. Prefer to merge both because some WhatsApp
-  // sessions return child groups in the latter but the root only in the former.
-  if(typeof wa.communityFetchAllParticipating==="function"){
-    try{
-      const communities=await wa.communityFetchAllParticipating();
-      const communityItems=Object.values(communities||{}) as any[];
-      communityFetchCount=communityItems.filter((item:any)=>item?.isCommunity===true).length;
-      for(const item of communityItems){
-        if(item?.id)byId.set(normalizeJid(String(item.id)),item);
-      }
-    }catch(error){
-      communityFetchError=error instanceof Error?error.message:String(error);
-      logger.warn({error:communityFetchError},"Baileys communityFetchAllParticipating failed; using participating groups");
+  const now=Date.now();const cached=communitySnapshotCache?.socket===wa?communitySnapshotCache:null;
+  if(cached&&now-cached.fetchedAt<45_000)return cached.snapshot;
+  if(communitySnapshotInFlight)return communitySnapshotInFlight;
+  if(now<communitySnapshotCooldownUntil){if(cached)return cached.snapshot;throw new Error("rate-overlimit: WhatsApp is temporarily limiting participating-groups queries; retry after the cooldown");}
+  const task=(async()=>{
+    const byId=new Map<string,any>();let communityFetchError:string|null=null;let groupFetchError:string|null=null;let communityFetchCount=0;
+    if(typeof wa.communityFetchAllParticipating==="function"){
+      try{const communities=await wa.communityFetchAllParticipating();const items=Object.values(communities||{}) as any[];communityFetchCount=items.filter((item:any)=>item?.isCommunity===true).length;for(const item of items){if(item?.id)byId.set(normalizeJid(String(item.id)),item);}}
+      catch(error){communityFetchError=error instanceof Error?error.message:String(error);logger.warn({error:communityFetchError},"Baileys communityFetchAllParticipating failed");if(isRateLimitError(error))throw error;}
     }
-  }
-  const fetched=await wa.groupFetchAllParticipating();
-  for(const item of Object.values(fetched||{}) as any[]){
-    if(item?.id){
-      const id=normalizeJid(String(item.id));
-      byId.set(id,{...(byId.get(id)||{}),...item});
-    }
-  }
-  const groups=[...byId.values()];
-  const normalized=normalizeJid(jid);
-  return {
-    groups,
-    exact:groups.find((item:any)=>normalizeJid(String(item.id))===normalized)??null,
-    communityCandidates:groups.filter((item:any)=>item.isCommunity===true),
-    linkedChildren:groups.filter((item:any)=>normalizeJid(String(item.linkedParent||""))===normalized),
-    communityFetchCount,
-    communityFetchError,
-  };
+    try{const fetched=await wa.groupFetchAllParticipating();for(const item of Object.values(fetched||{}) as any[]){if(item?.id){const id=normalizeJid(String(item.id));byId.set(id,{...(byId.get(id)||{}),...item});}}}
+    catch(error){groupFetchError=error instanceof Error?error.message:String(error);logger.warn({error:groupFetchError,communityFetchCount},"Baileys groupFetchAllParticipating failed");if(byId.size===0)throw error;}
+    const groups=[...byId.values()];const normalized=normalizeJid(jid);
+    const snapshot:CommunitySnapshot={groups,exact:groups.find((item:any)=>normalizeJid(String(item.id))===normalized)??null,communityCandidates:groups.filter((item:any)=>item.isCommunity===true),linkedChildren:groups.filter((item:any)=>normalizeJid(String(item.linkedParent||""))===normalized),communityFetchCount,communityFetchError,groupFetchError};
+    communitySnapshotCache={socket:wa,fetchedAt:Date.now(),snapshot};communitySnapshotCooldownUntil=0;return snapshot;
+  })();
+  communitySnapshotInFlight=task;
+  try{return await task;}catch(error){if(isRateLimitError(error)){communitySnapshotCooldownUntil=Date.now()+60_000;if(cached)return cached.snapshot;}throw error;}finally{communitySnapshotInFlight=null;}
 }
 function metadataFailure(error:unknown){
   const statusCode=(error as any)?.output?.statusCode??(error as any)?.statusCode??null;
@@ -278,6 +269,7 @@ export async function getCommunity(jid:string):Promise<CommunityMetadata>{
   // the only response that contains the root community on linked-device sessions.
   try{snapshot=await fetchCommunitySnapshot(wa,configuredId);}
   catch(error){snapshotError=error;}
+  if(snapshotError&&isRateLimitError(snapshotError)){logger.warn({configuredJid:configuredId,error:metadataFailure(snapshotError)},"Skipping direct community metadata query during WhatsApp rate-limit cooldown");throw new Error("WhatsApp community discovery is temporarily rate-limited. The session remains connected; retry after the cooldown. "+(snapshotError instanceof Error?snapshotError.message:""));}
   // Exact configured id in the participating snapshot is authoritative.
   if(snapshot?.exact?.isCommunity===true){
     try{return normalizeCommunityMetadata(snapshot.exact,configuredId);}
@@ -343,26 +335,29 @@ export async function getCommunity(jid:string):Promise<CommunityMetadata>{
 }
 export async function inspectCommunityDiscovery(jid:string){
   const wa=requireSocket() as any;
-  const snapshot=await fetchCommunitySnapshot(wa,jid);
+  let snapshot:CommunitySnapshot|null=null;let snapshotError:string|null=null;
+  try{snapshot=await fetchCommunitySnapshot(wa,jid);}catch(error){snapshotError=error instanceof Error?error.message:String(error);}
   return {
     configuredJid:normalizeJid(jid),
     connectedJid:normalizeJid(String(wa.user?.id??""))||null,
-    groupCount:snapshot.groups.length,
-    communityFetchCount:snapshot.communityFetchCount,
-    communityFetchError:snapshot.communityFetchError,
-    exactMatch:snapshot.exact?{
+    groupCount:snapshot?.groups.length??null,
+    communityFetchCount:snapshot?.communityFetchCount??null,
+    communityFetchError:snapshot?.communityFetchError??null,
+    groupFetchError:snapshot?.groupFetchError??snapshotError,
+    snapshotError,
+    exactMatch:snapshot?.exact?{
       id:normalizeJid(String(snapshot.exact.id)),
       subject:String(snapshot.exact.subject||""),
       isCommunity:snapshot.exact.isCommunity===true,
       linkedParent:normalizeJid(String(snapshot.exact.linkedParent||""))||null,
       participantCount:Array.isArray(snapshot.exact.participants)?snapshot.exact.participants.length:null,
     }:null,
-    communities:snapshot.communityCandidates.map((item:any)=>({
+    communities:(snapshot?.communityCandidates??[]).map((item:any)=>({
       id:normalizeJid(String(item.id)),
       subject:String(item.subject||""),
       participantCount:Array.isArray(item.participants)?item.participants.length:null,
     })),
-    linkedChildren:snapshot.linkedChildren.map((item:any)=>({
+    linkedChildren:(snapshot?.linkedChildren??[]).map((item:any)=>({
       id:normalizeJid(String(item.id)),
       subject:String(item.subject||""),
       linkedParent:normalizeJid(String(item.linkedParent||"")),
@@ -428,8 +423,8 @@ export async function participantAction(jid:string,phone:string,action:"add"|"re
 
 export async function listCommunities(configuredJid:string){
   const wa=requireSocket() as any;
-  const fetched=await wa.groupFetchAllParticipating();
-  const groups=Object.values(fetched||{}) as any[];
+  const snapshot=await fetchCommunitySnapshot(wa,configuredJid);
+  const groups=snapshot.groups;
   const configuredId=normalizeJid(configuredJid);
   const byId=new Map(groups.filter(g=>g?.id).map(g=>[normalizeJid(String(g.id)),g]));
   let resolvedConfigured:CommunityMetadata|null=null;
@@ -462,10 +457,10 @@ export async function listCommunities(configuredJid:string){
     const isAdmin=adminStatus==="admin"?true:adminStatus==="not_admin"?false:null;
     const isOwner=adminStatus==="admin"?await isSelfOwner(meta.owner,meta.ownerPn).catch(()=>false):false;
     const subgroups=groups.filter(g=>normalizeJid(String(g.linkedParent||""))===id);
-    const profile=await wa.profilePictureUrl(id,"image").catch(()=>null);
+    const profile=await cachedProfilePictureUrl(wa,id);
     const childrenWithPictures=[];
     for(const childGroup of subgroups){
-      const childPicture=await wa.profilePictureUrl(String(childGroup.id),"image").catch(()=>null);
+      const childPicture=await cachedProfilePictureUrl(wa,String(childGroup.id));
       childrenWithPictures.push({
         id:String(childGroup.id),
         subject:String(childGroup.subject||"Grupo WhatsApp"),

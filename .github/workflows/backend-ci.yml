@@ -7,6 +7,7 @@ on:
     branches:
       - main
       - fix/community-discovery-forbidden-2026-11-12
+      - fix/community-rate-limit-2026-11-12
 
 permissions:
   contents: read
@@ -21,9 +22,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
       - name: Install dependencies
-        run: npm ci
+        run: npm install
       - name: TypeScript typecheck
         run: npm run typecheck
       - name: Build
