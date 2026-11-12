@@ -313,6 +313,13 @@ export async function getCommunity(jid:string):Promise<CommunityMetadata>{
   // the only response that contains the root community on linked-device sessions.
   try{snapshot=await fetchCommunitySnapshot(wa,configuredId);}
   catch(error){snapshotError=error;}
+  // When WhatsApp explicitly rate-limits discovery, do not immediately issue
+  // another metadata IQ for the same account. The caller receives a clear
+  // temporary-unavailable result and the shared cooldown protects the session.
+  if(snapshotError&&isRateLimitError(snapshotError)){
+    logger.warn({configuredJid:configuredId,error:metadataFailure(snapshotError)},"Skipping direct community metadata query during WhatsApp rate-limit cooldown");
+    throw new Error("WhatsApp community discovery is temporarily rate-limited. The session remains connected; retry after the cooldown. "+(snapshotError instanceof Error?snapshotError.message:""));
+  }
   // Exact configured id in the participating snapshot is authoritative.
   if(snapshot?.exact?.isCommunity===true){
     try{return normalizeCommunityMetadata(snapshot.exact,configuredId);}
