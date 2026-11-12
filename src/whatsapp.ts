@@ -136,8 +136,10 @@ async function jidAliases(wa:any,...values:Array<string|null|undefined>){
   const initial=[...aliases];
   for(const jid of initial){
     try{
+      // Resolve LID -> PN only. Reverse PN -> LID may trigger a network
+      // USync lookup for every participant; Baileys metadata already supplies
+      // phoneNumber/lid aliases when available.
       if(jid.endsWith("@lid")&&typeof mapping?.getPNForLID==="function")add(await mapping.getPNForLID(jid));
-      if(jid.endsWith("@s.whatsapp.net")&&typeof mapping?.getLIDForPN==="function")add(await mapping.getLIDForPN(jid));
     }catch(error){
       logger.debug({jid,error:error instanceof Error?error.message:"LID mapping unavailable"},"Could not resolve WhatsApp PN/LID alias");
     }
