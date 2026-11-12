@@ -195,7 +195,7 @@ export async function participantAction(jid:string,phone:string,action:"add"|"re
   const [existence]=await wa.onWhatsApp(normalized);
   if(!existence?.exists||!existence.jid)throw new Error("The supplied phone number is not registered on WhatsApp");
   const target=String(existence.jid);
-  if(action==="remove" && phoneFromJid(target)===self) throw new Error("The connected administrator account cannot remove itself from its community");
+  if(action==="remove" && await sameWhatsAppUser(wa,{id:String(wa.user?.id??"")},target)) throw new Error("The connected administrator account cannot remove itself from its community");
   let existingParticipant:CommunityParticipant|undefined;
   for(const participant of meta.participants){
     if(await sameWhatsAppUser(wa,participant,target)){existingParticipant=participant;break;}
@@ -308,7 +308,7 @@ export async function groupParticipantAction(jid:string,phone:string,action:"add
   const [existence]=await wa.onWhatsApp(normalized);
   if(!existence?.exists||!existence.jid)throw new Error("The supplied phone number is not registered on WhatsApp");
   const target=String(existence.jid);
-  if(action==="remove"&&phoneFromJid(target)===self)throw new Error("The connected administrator account cannot remove itself");
+  if(action==="remove"&&await sameWhatsAppUser(wa,{id:String(wa.user?.id??"")},target))throw new Error("The connected administrator account cannot remove itself");
   let existing:any;
   for(const participant of (metadata.participants||[])){
     if(await sameWhatsAppUser(wa,{id:String(participant.id||""),admin:participant.admin,phoneNumber:participant.phoneNumber,lid:participant.lid},target)){existing=participant;break;}
