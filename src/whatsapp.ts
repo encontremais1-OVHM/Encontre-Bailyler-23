@@ -403,12 +403,14 @@ export async function listCommunities(configuredJid:string){
   const groups=Object.values(fetched||{}) as any[];
   const configuredId=normalizeJid(configuredJid);
   const byId=new Map(groups.filter(g=>g?.id).map(g=>[normalizeJid(String(g.id)),g]));
-  // If the configured community is omitted from the participating snapshot,
-  // ask WhatsApp for that exact JID. Never manufacture a fake "community"
-  // entry from COMMUNITY_JID alone.
-  if(configuredId&&!byId.has(configuredId)){
-    try{const configured=await getCommunity(configuredId);byId.set(configuredId,configured);}
-    catch(error){logger.warn({jid:configuredId,error:error instanceof Error?error.message:String(error)},"Configured WhatsApp community was not present in participating groups");}
+  let resolvedConfigured:CommunityMetadata|null=null;
+  if(configuredId){
+    try{
+      resolvedConfigured=await getCommunity(configuredId);
+      byId.set(resolvedConfigured.id,resolvedConfigured);
+    }catch(error){
+      logger.warn({jid:configuredId,error:error instanceof Error?error.message:String(error)},"Could not resolve configured WhatsApp community from participating groups");
+    }
   }
   const communityGroups=[...byId.values()].filter(g=>g?.isCommunity===true);
   const result=[];
@@ -418,17 +420,9 @@ export async function listCommunities(configuredJid:string){
     let metadataSource:"live"|"participating_cache"="participating_cache";
     let adminStatus:"admin"|"not_admin"|"unknown"="unknown";
     let adminCheckError:string|null=null;
-    if(id===configuredId){
-      try{meta={...group,...await getCommunity(id)};metadataSource="live";}
-      catch(error){
-        // groupFetchAllParticipating is itself an authenticated WhatsApp query.
-        // If it supplied the actual community and participant roster, use that
-        // snapshot instead of failing solely because the per-JID query returned
-        // FORBIDDEN. Otherwise keep the role explicitly unknown.
-        if(!Array.isArray(group.participants)){
-          adminCheckError=error instanceof Error?error.message:"Community metadata could not be verified";
-        }
-      }
+    if(resolvedConfigured&&id===resolvedConfigured.id){
+      meta={...group,...resolvedConfigured};
+      metadataSource:"live";
     }
     if(!adminCheckError&&Array.isArray(meta.participants)){
       try{const isAdmin=await isSelfAdmin(meta.participants,meta.owner,meta.ownerPn);adminStatus=isAdmin===null?"unknown":isAdmin?"admin":"not_admin";}
