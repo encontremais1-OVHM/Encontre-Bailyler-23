@@ -225,16 +225,40 @@ function normalizeCommunityMetadata(metadata:any,jid:string):CommunityMetadata{
     })).filter((p:CommunityParticipant)=>Boolean(p.id))
   };
 }
-type CommunitySnapshot={groups:any[];exact:any|null;communityCandidates:any[];linkedChildren:any[]};
+type CommunitySnapshot={groups:any[];exact:any|null;communityCandidates:any[];linkedChildren:any[];communityFetchCount:number;communityFetchError:string|null};
 async function fetchCommunitySnapshot(wa:any,jid:string):Promise<CommunitySnapshot>{
+  const byId=new Map<string,any>();
+  let communityFetchError:string|null=null;
+  // The library exposes a dedicated community list as well as the general
+  // participating-groups list. Prefer to merge both because some WhatsApp
+  // sessions return child groups in the latter but the root only in the former.
+  if(typeof wa.communityFetchAllParticipating==="function"){
+    try{
+      const communities=await wa.communityFetchAllParticipating();
+      for(const item of Object.values(communities||{}) as any[]){
+        if(item?.id)byId.set(normalizeJid(String(item.id)),item);
+      }
+    }catch(error){
+      communityFetchError=error instanceof Error?error.message:String(error);
+      logger.warn({error:communityFetchError},"Baileys communityFetchAllParticipating failed; using participating groups");
+    }
+  }
   const fetched=await wa.groupFetchAllParticipating();
-  const groups=Object.values(fetched||{}).filter((item:any)=>item&&item.id) as any[];
+  for(const item of Object.values(fetched||{}) as any[]){
+    if(item?.id){
+      const id=normalizeJid(String(item.id));
+      byId.set(id,{...(byId.get(id)||{}),...item});
+    }
+  }
+  const groups=[...byId.values()];
   const normalized=normalizeJid(jid);
   return {
     groups,
     exact:groups.find((item:any)=>normalizeJid(String(item.id))===normalized)??null,
     communityCandidates:groups.filter((item:any)=>item.isCommunity===true),
     linkedChildren:groups.filter((item:any)=>normalizeJid(String(item.linkedParent||""))===normalized),
+    communityFetchCount:typeof wa.communityFetchAllParticipating==="function"?groups.filter((item:any)=>item.isCommunity===true).length:0,
+    communityFetchError,
   };
 }
 function metadataFailure(error:unknown){
@@ -321,6 +345,8 @@ export async function inspectCommunityDiscovery(jid:string){
     configuredJid:normalizeJid(jid),
     connectedJid:normalizeJid(String(wa.user?.id??""))||null,
     groupCount:snapshot.groups.length,
+    communityFetchCount:snapshot.communityFetchCount,
+    communityFetchError:snapshot.communityFetchError,
     exactMatch:snapshot.exact?{
       id:normalizeJid(String(snapshot.exact.id)),
       subject:String(snapshot.exact.subject||""),
