@@ -165,7 +165,15 @@ async function resolveWhatsAppParticipant(wa:any,phone:string){
   const row=rows.find((item:any)=>item?.exists===true)??rows.find((item:any)=>item?.jid||item?.phoneNumber||item?.lid||item?.id);
   const exists=row?.exists===true;
   const candidates:string[]=[];
-  const add=(value:any)=>{if(typeof value==="string"&&value.trim())candidates.push(normalizeJid(value));};
+  const add=(value:any)=>{
+    if(typeof value!=="string"||!value.trim())return;
+    const raw=value.trim();
+    if(/^\+?\d{8,15}$/.test(raw)){
+      candidates.push(raw.replace(/\D/g,"")+"@s.whatsapp.net");
+      return;
+    }
+    candidates.push(normalizeJid(raw));
+  };
   add(row?.jid);add(row?.phoneNumber);add(row?.lid);add(row?.id);
 
   // WhatsApp may expose a LID instead of a PN JID. Resolve both identities
@@ -198,7 +206,10 @@ export async function resolveWhatsAppPhoneNumber(...identities:string[]):Promise
   if(phoneJid)return phoneFromJid(phoneJid);
   for(const identity of identities){
     const value=String(identity||"").trim();
-    if(/^\d{8,15}$/.test(value))return value;
+    if(!value.includes("@")){
+      const digits=value.replace(/\D/g,"");
+      if(/^\d{8,15}$/.test(digits))return digits;
+    }
   }
   return null;
 }
