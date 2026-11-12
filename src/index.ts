@@ -6,7 +6,7 @@ import helmet from "helmet";
 import QRCode from "qrcode";
 import {createClient} from "@supabase/supabase-js";
 import {z} from "zod";
-import {connect,status,currentQr,currentPairingCode,pairing,logout,getCommunity,isSelfAdmin,participantAction,listCommunities,groupParticipants,groupParticipantAction,groupInviteLink,groupProfilePicture,sendTextMessage} from "./whatsapp.js";
+import {connect,status,currentQr,currentPairingCode,pairing,logout,getCommunity,isSelfAdmin,isSelfOwner,participantAction,listCommunities,groupParticipants,groupParticipantAction,groupInviteLink,groupProfilePicture,sendTextMessage} from "./whatsapp.js";
 
 const env=z.object({
   PORT:z.coerce.number().int().positive().default(8080),
@@ -84,10 +84,14 @@ app.post("/v1/session/logout",...secure,async(_req,res)=>{
 app.get("/v1/community",...secure,async(_req,res)=>{
   try{
     const c=await getCommunity(env.COMMUNITY_JID);
-    const isAdmin=await isSelfAdmin(c.participants);
-    if(isAdmin===null)throw new Error("Community administrator permissions could not be verified because a PN/LID identity mapping is missing");
-    res.json({ok:true,data:{id:c.id,subject:c.subject,isCommunity:c.isCommunity,participantCount:c.participants.length,connectedAccount:status().phone,isAdmin,adminStatus:isAdmin?"admin":"not_admin"}});
-  }catch(e){res.status(502).json({ok:false,error:"community_unavailable",message:e instanceof Error?e.message:"Unknown error"});}
+    const isOwner=await isSelfOwner(c.owner,c.ownerPn);
+    const isAdmin=await isSelfAdmin(c.participants,c.owner,c.ownerPn);
+    if(isAdmin===null)throw new Error("Community permissions could not be verified because the connected account PN/LID identity could not be matched to the WhatsApp participant list or owner metadata");
+    res.json({ok:true,data:{id:c.id,subject:c.subject,isCommunity:c.isCommunity,participantCount:c.participants.length,connectedAccount:status().phone,isOwner,accountRole:isOwner?"owner":isAdmin?"admin":"member",isAdmin,adminStatus:isAdmin?"admin":"not_admin"}});
+  }catch(e){
+    const statusCode=(e as any)?.output?.statusCode??(e as any)?.statusCode;
+    res.status(statusCode===403?403:502).json({ok:false,error:"community_unavailable",message:e instanceof Error?e.message:"Unknown error"});
+  }
 });
 app.get("/v1/communities",...secure,async(_req,res)=>{
   try{res.json({ok:true,data:{communities:await listCommunities(env.COMMUNITY_JID)}});}
