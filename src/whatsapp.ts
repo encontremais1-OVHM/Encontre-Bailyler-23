@@ -151,17 +151,33 @@ async function sameWhatsAppUser(wa:any,left:CommunityParticipant,rightJid:string
   const rightAliases=await jidAliases(wa,rightJid);
   return [...leftAliases].some(alias=>rightAliases.has(alias));
 }
-export async function isSelfAdmin(participants:CommunityParticipant[]){
+export async function isSelfAdmin(participants:CommunityParticipant[]):Promise<boolean|null>{
   const wa=requireSocket() as any;
   const selfJid=String(wa.user?.id??"");
   if(!selfJid)throw new Error("WhatsApp did not expose the connected account identity; administrator permissions cannot be verified");
   const selfAliases=await jidAliases(wa,selfJid,String(wa.user?.lid??""),String(wa.user?.phoneNumber??""));
   if(selfAliases.size===0)throw new Error("Could not resolve the connected WhatsApp account identity; administrator permissions cannot be verified");
+  const selfIsLid=normalizeJid(selfJid).endsWith("@lid");
+  const selfHasPn=[...selfAliases].some(alias=>alias.endsWith("@s.whatsapp.net"));
+  let selfFound=false;
+  let unresolvedParticipantIdentity=false;
   for(const participant of participants){
-    if(participant.admin!=="admin"&&participant.admin!=="superadmin")continue;
+    const participantId=normalizeJid(participant.id);
     const participantAliases=await jidAliases(wa,participant.id,participant.phoneNumber,participant.lid);
-    if([...participantAliases].some(alias=>selfAliases.has(alias)))return true;
+    if([...participantAliases].some(alias=>selfAliases.has(alias))){
+      selfFound=true;
+      if(participant.admin==="admin"||participant.admin==="superadmin")return true;
+      continue;
+    }
+    const participantHasPn=[...participantAliases].some(alias=>alias.endsWith("@s.whatsapp.net"));
+    const participantHasLid=[...participantAliases].some(alias=>alias.endsWith("@lid"));
+    if(participantId.endsWith("@lid")&&!participantHasPn)unresolvedParticipantIdentity=true;
+    if(selfIsLid&&!selfHasPn&&participantId.endsWith("@s.whatsapp.net")&&!participantHasLid)unresolvedParticipantIdentity=true;
   }
+  if(selfFound)return false;
+  // An unmatched LID is not proof of a different user. Keep this state
+  // unknown until Baileys can resolve the PN/LID pair.
+  if(unresolvedParticipantIdentity)return null;
   return false;
 }
 export async function getCommunity(jid:string):Promise<CommunityMetadata>{
@@ -192,6 +208,7 @@ export async function participantAction(jid:string,phone:string,action:"add"|"re
   const wa=requireSocket() as any;
   const meta=await getCommunity(jid);
   const admin=await isSelfAdmin(meta.participants);
+  if(admin===null)throw new Error("The connected WhatsApp account's administrator permissions could not be verified because a PN/LID identity mapping is missing");
   if(!admin)throw new Error("The connected WhatsApp account is not an administrator of the configured community");
   const normalized=phone.replace(/\D/g,"");
   const [existence]=await wa.onWhatsApp(normalized);
@@ -243,7 +260,7 @@ export async function listCommunities(configuredJid:string){
       catch(error){adminCheckError=error instanceof Error?error.message:"Community metadata could not be verified";}
     }
     if(!adminCheckError&&Array.isArray(meta.participants)){
-      try{const isAdmin=await isSelfAdmin(meta.participants);adminStatus=isAdmin?"admin":"not_admin";}
+      try{const isAdmin=await isSelfAdmin(meta.participants);adminStatus=isAdmin===null?"unknown":isAdmin?"admin":"not_admin";}
       catch(error){adminCheckError=error instanceof Error?error.message:"Administrator permissions could not be verified";}
     }else if(!adminCheckError){
       adminCheckError="WhatsApp did not return a participants list for this community";
@@ -302,6 +319,7 @@ export async function groupParticipantAction(jid:string,phone:string,action:"add
   const metadata:any=await wa.groupMetadata(jid);
   if(metadata.isCommunity)return participantAction(jid,phone,action);
   const selfIsAdmin=await isSelfAdmin(Array.isArray(metadata.participants)?metadata.participants:[]);
+  if(selfIsAdmin===null)throw new Error("The connected WhatsApp account's administrator permissions could not be verified because a PN/LID identity mapping is missing");
   if(!selfIsAdmin){
     throw new Error("The connected WhatsApp account is not an administrator of this group");
   }
