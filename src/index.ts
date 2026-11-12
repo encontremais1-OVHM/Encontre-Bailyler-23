@@ -6,7 +6,7 @@ import helmet from "helmet";
 import QRCode from "qrcode";
 import {createClient} from "@supabase/supabase-js";
 import {z} from "zod";
-import {connect,status,currentQr,currentPairingCode,pairing,logout,getCommunity,isSelfAdmin,isSelfOwner,participantAction,listCommunities,groupParticipants,groupParticipantAction,groupInviteLink,groupProfilePicture,sendTextMessage,inspectCommunityDiscovery} from "./whatsapp.js";
+import {connect,status,currentQr,currentPairingCode,pairing,logout,getCommunity,isSelfAdmin,isSelfOwner,participantAction,listCommunities,groupParticipants,groupParticipantAction,groupInviteLink,groupProfilePicture,sendTextMessage,inspectCommunityDiscovery,resolveWhatsAppPhoneNumber} from "./whatsapp.js";
 
 const env=z.object({
   PORT:z.coerce.number().int().positive().default(8080),
@@ -112,8 +112,18 @@ async function forwardParticipantEvents(payload:any){
   const participants=Array.isArray(payload?.participants)?payload.participants:[];
   const secret=await webhookSecret();
   for(const item of participants){
-    const participantJid=String(typeof item==="string"?item:item?.id||item?.jid||"");
-    if(!participantJid)continue;
+    const rawIdentity=String(typeof item==="string"?item:item?.id||item?.jid||"");
+    if(!rawIdentity)continue;
+    const phone=await resolveWhatsAppPhoneNumber(
+      rawIdentity,
+      typeof item==="string"?"":String(item?.phoneNumber||""),
+      typeof item==="string"?"":String(item?.lid||"")
+    );
+    if(!phone){
+      console.warn("WhatsApp participant event skipped: PN/LID identity could not be resolved",{groupId});
+      continue;
+    }
+    const participantJid=phone+"@s.whatsapp.net";
     const event={
       event:action==="add"?"whatsapp.participant_added":"whatsapp.participant_removed",
       action,group_id:groupId,participant_jid:participantJid,
