@@ -53,7 +53,7 @@ app.post("/internal/whatsapp/participants/add",async(req,res)=>{
       operation_id:z.string().uuid(),
       group_id:z.string().endsWith("@g.us"),
       group_type:z.enum(["community","subgroup"]),
-      phone:z.string().regex(/^\\d{8,15}$/),
+      phone:z.string().regex(/^\d{8,15}$/),
     }).safeParse(req.body);
     if(!parsed.success){
       res.status(422).json({ok:false,error:"invalid_internal_access_payload"});
@@ -81,7 +81,7 @@ app.post("/internal/whatsapp/participants/add",async(req,res)=>{
     const group=groupResult.data;
     const member=memberResult.data;
     const membership=membershipResult.data;
-    const storedPhone=String(member?.phone_e164||member?.phone||"").replace(/\\D/g,"");
+    const storedPhone=String(member?.phone_e164||member?.phone||"").replace(/\D/g,"");
     if(!group||group.external_group_id!==payload.group_id||group.group_type!==payload.group_type||!group.is_active||
        !member||storedPhone!==payload.phone||!membership||!["pending_invitation","invited","joined"].includes(membership.status)){
       res.status(409).json({ok:false,error:"access_operation_context_mismatch"});
