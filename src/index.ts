@@ -85,6 +85,7 @@ app.get("/v1/community",...secure,async(_req,res)=>{
   try{
     const c=await getCommunity(env.COMMUNITY_JID);
     const isAdmin=await isSelfAdmin(c.participants);
+    if(isAdmin===null)throw new Error("Community administrator permissions could not be verified because a PN/LID identity mapping is missing");
     res.json({ok:true,data:{id:c.id,subject:c.subject,isCommunity:c.isCommunity,participantCount:c.participants.length,connectedAccount:status().phone,isAdmin,adminStatus:isAdmin?"admin":"not_admin"}});
   }catch(e){res.status(502).json({ok:false,error:"community_unavailable",message:e instanceof Error?e.message:"Unknown error"});}
 });
