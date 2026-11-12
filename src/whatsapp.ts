@@ -124,6 +124,8 @@ function normalizeJid(value:string){
   return jid.slice(0,at).split(":")[0]+"@"+jid.slice(at+1);
 }
 function phoneFromJid(jid:string){return normalizeJid(jid).split("@")[0];}
+function isLidJid(jid:string){return jid.endsWith("@lid")||jid.endsWith("@hosted.lid");}
+function isPnJid(jid:string){return jid.endsWith("@s.whatsapp.net")||jid.endsWith("@hosted");}
 async function jidAliases(wa:any,...values:Array<string|null|undefined>){
   const aliases=new Set<string>();
   const add=(value:string|null|undefined)=>{
@@ -139,7 +141,7 @@ async function jidAliases(wa:any,...values:Array<string|null|undefined>){
       // Resolve LID -> PN only. Reverse PN -> LID may trigger a network
       // USync lookup for every participant; Baileys metadata already supplies
       // phoneNumber/lid aliases when available.
-      if(jid.endsWith("@lid")&&typeof mapping?.getPNForLID==="function")add(await mapping.getPNForLID(jid));
+      if(isLidJid(jid)&&typeof mapping?.getPNForLID==="function")add(await mapping.getPNForLID(jid));
     }catch(error){
       logger.debug({jid,error:error instanceof Error?error.message:"LID mapping unavailable"},"Could not resolve WhatsApp PN/LID alias");
     }
@@ -157,8 +159,8 @@ export async function isSelfAdmin(participants:CommunityParticipant[]):Promise<b
   if(!selfJid)throw new Error("WhatsApp did not expose the connected account identity; administrator permissions cannot be verified");
   const selfAliases=await jidAliases(wa,selfJid,String(wa.user?.lid??""),String(wa.user?.phoneNumber??""));
   if(selfAliases.size===0)throw new Error("Could not resolve the connected WhatsApp account identity; administrator permissions cannot be verified");
-  const selfIsLid=normalizeJid(selfJid).endsWith("@lid");
-  const selfHasPn=[...selfAliases].some(alias=>alias.endsWith("@s.whatsapp.net"));
+  const selfIsLid=isLidJid(normalizeJid(selfJid));
+  const selfHasPn=[...selfAliases].some(isPnJid);
   let selfFound=false;
   let unresolvedParticipantIdentity=false;
   for(const participant of participants){
@@ -169,10 +171,10 @@ export async function isSelfAdmin(participants:CommunityParticipant[]):Promise<b
       if(participant.admin==="admin"||participant.admin==="superadmin")return true;
       continue;
     }
-    const participantHasPn=[...participantAliases].some(alias=>alias.endsWith("@s.whatsapp.net"));
-    const participantHasLid=[...participantAliases].some(alias=>alias.endsWith("@lid"));
-    if(participantId.endsWith("@lid")&&!participantHasPn)unresolvedParticipantIdentity=true;
-    if(selfIsLid&&!selfHasPn&&participantId.endsWith("@s.whatsapp.net")&&!participantHasLid)unresolvedParticipantIdentity=true;
+    const participantHasPn=[...participantAliases].some(isPnJid);
+    const participantHasLid=[...participantAliases].some(isLidJid);
+    if(isLidJid(participantId)&&!participantHasPn)unresolvedParticipantIdentity=true;
+    if(selfIsLid&&!selfHasPn&&isPnJid(participantId)&&!participantHasLid)unresolvedParticipantIdentity=true;
   }
   if(selfFound)return false;
   // An unmatched LID is not proof of a different user. Keep this state
