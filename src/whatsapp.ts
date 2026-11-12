@@ -152,6 +152,67 @@ async function jidAliases(wa:any,...values:Array<string|null|undefined>){
   }
   return aliases;
 }
+async function resolveWhatsAppParticipant(wa:any,phone:string){
+  const normalized=String(phone||"").replace(/\D/g,"");
+  if(!/^\d{8,15}$/.test(normalized))throw new Error("Invalid WhatsApp phone number");
+  let rows:any[]=[];
+  try{
+    const response=await wa.onWhatsApp(normalized);
+    rows=Array.isArray(response)?response:response?[response]:[];
+  }catch(error){
+    logger.warn({error:error instanceof Error?error.message:"lookup failed"},"WhatsApp number lookup failed");
+  }
+  const row=rows.find((item:any)=>item?.exists===true)??rows.find((item:any)=>item?.jid||item?.phoneNumber||item?.lid||item?.id);
+  const exists=row?.exists===true;
+  const candidates:string[]=[];
+  const add=(value:any)=>{
+    if(typeof value!=="string"||!value.trim())return;
+    const raw=value.trim();
+    if(/^\+?\d{8,15}$/.test(raw)){
+      candidates.push(raw.replace(/\D/g,"")+"@s.whatsapp.net");
+      return;
+    }
+    candidates.push(normalizeJid(raw));
+  };
+  add(row?.jid);add(row?.phoneNumber);add(row?.lid);add(row?.id);
+
+  // WhatsApp may expose a LID instead of a PN JID. Resolve both identities
+  // when Baileys has the mapping, and prefer the phone-number JID for writes.
+  let mappingResolved=false;
+  if(typeof wa.findUserId==="function"){
+    const probes=[...candidates,normalized+"@s.whatsapp.net"];
+    for(const probe of [...new Set(probes)]){
+      try{
+        const mapped=await wa.findUserId(probe);
+        if(mapped?.phoneNumber){add(mapped.phoneNumber);mappingResolved=true;}
+        if(mapped?.lid){add(mapped.lid);mappingResolved=true;}
+      }catch(error){
+        logger.debug({probe,error:error instanceof Error?error.message:"PN/LID mapping unavailable"},"Could not resolve WhatsApp participant PN/LID identity");
+      }
+    }
+  }
+  if(exists&&!candidates.length)add(normalized+"@s.whatsapp.net");
+  const valid=[...new Set(candidates)].filter((jid)=>isPnJid(jid)||isLidJid(jid));
+  const target=valid.find(isPnJid)||valid.find(isLidJid);
+  if(!target||(!exists&&!mappingResolved)){
+    throw new Error("O WhatsApp não confirmou que o número indicado está registado. Confirme o indicativo internacional e tente novamente.");
+  }
+  return {normalized,target};
+}
+export async function resolveWhatsAppPhoneNumber(...identities:string[]):Promise<string|null>{
+  const wa=requireSocket() as any;
+  const aliases=await jidAliases(wa,...identities);
+  const phoneJid=[...aliases].find(isPnJid);
+  if(phoneJid)return phoneFromJid(phoneJid);
+  for(const identity of identities){
+    const value=String(identity||"").trim();
+    if(!value.includes("@")){
+      const digits=value.replace(/\D/g,"");
+      if(/^\d{8,15}$/.test(digits))return digits;
+    }
+  }
+  return null;
+}
 async function sameWhatsAppUser(wa:any,left:CommunityParticipant,rightJid:string){
   const leftAliases=await jidAliases(wa,left.id,left.phoneNumber,left.lid);
   const rightAliases=await jidAliases(wa,rightJid);
@@ -377,10 +438,7 @@ export async function participantAction(jid:string,phone:string,action:"add"|"re
   const admin=await isSelfAdmin(meta.participants,meta.owner,meta.ownerPn);
   if(admin===null)throw new Error("The connected WhatsApp account's administrator permissions could not be verified because a PN/LID identity mapping is missing");
   if(!admin)throw new Error("The connected WhatsApp account is not an administrator of the configured community");
-  const normalized=phone.replace(/\D/g,"");
-  const [existence]=await wa.onWhatsApp(normalized);
-  if(!existence?.exists||!existence.jid)throw new Error("The supplied phone number is not registered on WhatsApp");
-  const target=String(existence.jid);
+  const {normalized,target}=await resolveWhatsAppParticipant(wa,phone);
   if(action==="remove" && await sameWhatsAppUser(wa,{id:String(wa.user?.id??"")},target)) throw new Error("The connected administrator account cannot remove itself from its community");
   if(action==="remove"){
     const ownerAliases=await jidAliases(wa,meta.owner,meta.ownerPn);
@@ -416,6 +474,16 @@ export async function participantAction(jid:string,phone:string,action:"add"|"re
     const participant=findNodes(resultNode,"participant").find((p:any)=>p.attrs?.jid===target);
     if(!participant)throw new Error("WhatsApp returned no per-participant result; operation is not confirmed");
     waStatus=String(participant.attrs?.error??"200");
+  }
+  if(waStatus==="409"&&action==="add"){
+    const refreshed:any=await (typeof wa.communityMetadata==="function"
+      ? wa.communityMetadata(communityJid).catch(()=>null)
+      : wa.groupMetadata(communityJid).catch(()=>null));
+    for(const participant of (Array.isArray(refreshed?.participants)?refreshed.participants:[])){
+      if(await sameWhatsAppUser(wa,participant,target)){
+        return {phone:normalized,action,status:"already_member",jid:target,communityJid,whatsappStatus:waStatus};
+      }
+    }
   }
   if(waStatus!=="200")throw new Error("WhatsApp rejected the community "+action+" operation (status "+waStatus+")");
   return {phone:normalized,action,status:"request_submitted",jid:target,communityJid,whatsappStatus:waStatus,removesFromLinkedGroups:action==="remove"};
@@ -503,11 +571,16 @@ export async function groupParticipants(jid:string,configuredJid:string){
   for(const p of participants){
     const id=String(p.id||p.jid||"");
     const aliases=await jidAliases(wa,id,p.phoneNumber,p.lid);
+    const phoneJid=[...aliases].find(isPnJid)||null;
+    const phoneNumber=phoneJid?phoneFromJid(phoneJid):null;
     const isOwner=[...aliases].some(alias=>ownerAliases.has(alias));
     const isAdmin=isOwner||p.admin==="admin"||p.admin==="superadmin"||p.isAdmin===true||p.isSuperAdmin===true;
     result.push({
       id,
-      jid:id,
+      // Expose the canonical PN JID when available. Downstream membership
+      // reconciliation must never mistake a numeric LID for a phone number.
+      jid:phoneJid||id,
+      phoneNumber,
       admin:Boolean(isAdmin),
       role:isOwner?"owner":isAdmin?"admin":"member",
       isOwner,
@@ -519,19 +592,26 @@ export async function groupParticipants(jid:string,configuredJid:string){
 
 export async function groupParticipantAction(jid:string,phone:string,action:"add"|"remove",configuredJid:string){
   const wa=requireSocket() as any;
-  if(jid===configuredJid)return participantAction(jid,phone,action);
-  const metadata:any=await wa.groupMetadata(jid);
-  if(metadata.isCommunity)return participantAction(jid,phone,action);
+  const normalizedJid=normalizeJid(jid);
+  // Resolve the actual community root independently of a possibly stale
+  // COMMUNITY_JID environment value. A subgroup resolves to its parent, so
+  // only an exact id match is treated as a community-level operation.
+  try{
+    const resolvedCommunity=await getCommunity(normalizedJid);
+    if(normalizeJid(resolvedCommunity.id)===normalizedJid){
+      return participantAction(normalizedJid,phone,action);
+    }
+  }catch(error){
+    logger.debug({jid:normalizedJid,error:error instanceof Error?error.message:"community metadata unavailable"},"JID did not resolve as a community root; checking regular group metadata");
+  }
+  const metadata:any=await wa.groupMetadata(normalizedJid);
+  if(metadata.isCommunity)return participantAction(normalizedJid,phone,action);
   const selfIsAdmin=await isSelfAdmin(Array.isArray(metadata.participants)?metadata.participants:[],metadata.owner,metadata.ownerPn);
   if(selfIsAdmin===null)throw new Error("The connected WhatsApp account's administrator permissions could not be verified because a PN/LID identity mapping is missing");
   if(!selfIsAdmin){
     throw new Error("The connected WhatsApp account is not an administrator of this group");
   }
-  const normalized=phone.replace(/\D/g,"");
-  if(!/^\d{8,15}$/.test(normalized))throw new Error("Invalid WhatsApp phone number");
-  const [existence]=await wa.onWhatsApp(normalized);
-  if(!existence?.exists||!existence.jid)throw new Error("The supplied phone number is not registered on WhatsApp");
-  const target=String(existence.jid);
+  const {normalized,target}=await resolveWhatsAppParticipant(wa,phone);
   if(action==="remove"&&await sameWhatsAppUser(wa,{id:String(wa.user?.id??"")},target))throw new Error("The connected administrator account cannot remove itself");
   let existing:any;
   for(const participant of (metadata.participants||[])){
@@ -542,10 +622,19 @@ export async function groupParticipantAction(jid:string,phone:string,action:"add
   }
   if(action==="add"&&existing)return {phone:normalized,action,status:"already_member",jid:target};
   if(action==="remove"&&!existing)return {phone:normalized,action,status:"not_member",jid:target};
-  const response=await wa.groupParticipantsUpdate(jid,[target],action);
+  const response=await wa.groupParticipantsUpdate(normalizedJid,[target],action);
   const result=Array.isArray(response)?response[0]:null;
-  if(!result||String(result.status||"200")!=="200")throw new Error("WhatsApp did not accept the group participant operation");
-  return {phone:normalized,action,status:"request_submitted",jid:target,whatsappStatus:String(result.status||"200")};
+  const resultStatus=String(result?.status||"200");
+  if(action==="add"&&resultStatus==="409"){
+    const refreshed:any=await wa.groupMetadata(normalizedJid).catch(()=>null);
+    for(const participant of (Array.isArray(refreshed?.participants)?refreshed.participants:[])){
+      if(await sameWhatsAppUser(wa,{id:String(participant.id||""),admin:participant.admin,phoneNumber:participant.phoneNumber,lid:participant.lid},target)){
+        return {phone:normalized,action,status:"already_member",jid:target,whatsappStatus:resultStatus};
+      }
+    }
+  }
+  if(!result||resultStatus!=="200")throw new Error("WhatsApp did not accept the group participant operation (status "+resultStatus+")");
+  return {phone:normalized,action,status:"request_submitted",jid:target,whatsappStatus:resultStatus};
 }
 
 export async function groupInviteLink(jid:string){

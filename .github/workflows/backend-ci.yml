@@ -8,6 +8,7 @@ on:
       - main
       - fix/community-discovery-forbidden-2026-11-12
       - fix/community-rate-limit-2026-11-12
+      - fix/whatsapp-registration-access-2026-11-12
 
 permissions:
   contents: read
