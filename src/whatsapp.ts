@@ -422,7 +422,7 @@ export async function listCommunities(configuredJid:string){
     let adminCheckError:string|null=null;
     if(resolvedConfigured&&id===resolvedConfigured.id){
       meta={...group,...resolvedConfigured};
-      metadataSource:"live";
+      metadataSource="live";
     }
     if(!adminCheckError&&Array.isArray(meta.participants)){
       try{const isAdmin=await isSelfAdmin(meta.participants,meta.owner,meta.ownerPn);adminStatus=isAdmin===null?"unknown":isAdmin?"admin":"not_admin";}
