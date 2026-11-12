@@ -195,7 +195,7 @@ export async function isSelfAdmin(participants:CommunityParticipant[],owner:stri
     if(selfIsLid&&!selfHasPn&&isPnJid(participantId)&&!participantHasLid)unresolvedParticipantIdentity=true;
   }
   if(selfFound)return false;
-  if(unresolvedParticipantIdentity)return null;
+  if(unresolvedParticipantIdentity||participants.length===0)return null;
   return false;
 }
 async function communityQuery(jid:string,type:"get"|"set",content:any[]){
@@ -262,6 +262,11 @@ export async function participantAction(jid:string,phone:string,action:"add"|"re
   if(!existence?.exists||!existence.jid)throw new Error("The supplied phone number is not registered on WhatsApp");
   const target=String(existence.jid);
   if(action==="remove" && await sameWhatsAppUser(wa,{id:String(wa.user?.id??"")},target)) throw new Error("The connected administrator account cannot remove itself from its community");
+  if(action==="remove"){
+    const ownerAliases=await jidAliases(wa,meta.owner,meta.ownerPn);
+    const targetAliases=await jidAliases(wa,target);
+    if([...ownerAliases].some(alias=>targetAliases.has(alias)))throw new Error("Refusing to remove the WhatsApp community owner");
+  }
   let existingParticipant:CommunityParticipant|undefined;
   for(const participant of meta.participants){
     if(await sameWhatsAppUser(wa,participant,target)){existingParticipant=participant;break;}
