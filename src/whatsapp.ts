@@ -375,12 +375,23 @@ export async function groupParticipants(jid:string,configuredJid:string){
     }
   }
   const participants=Array.isArray(metadata.participants)?metadata.participants:[];
-  return participants.map((p:any)=>({
-    id:String(p.id||p.jid||""),
-    jid:String(p.id||p.jid||""),
-    admin:Boolean(p.admin==="admin"||p.admin==="superadmin"),
-    name:p.name?String(p.name):null,
-  }));
+  const ownerAliases=await jidAliases(wa,metadata.owner,metadata.ownerPn);
+  const result=[];
+  for(const p of participants){
+    const id=String(p.id||p.jid||"");
+    const aliases=await jidAliases(wa,id,p.phoneNumber,p.lid);
+    const isOwner=[...aliases].some(alias=>ownerAliases.has(alias));
+    const isAdmin=isOwner||p.admin==="admin"||p.admin==="superadmin"||p.isAdmin===true||p.isSuperAdmin===true;
+    result.push({
+      id,
+      jid:id,
+      admin:Boolean(isAdmin),
+      role:isOwner?"owner":isAdmin?"admin":"member",
+      isOwner,
+      name:p.name?String(p.name):null,
+    });
+  }
+  return result;
 }
 
 export async function groupParticipantAction(jid:string,phone:string,action:"add"|"remove",configuredJid:string){
