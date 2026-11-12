@@ -120,7 +120,7 @@ function normalizeJid(value:string){
   const jid=String(value||"").trim().toLowerCase();
   if(!jid)return "";
   const at=jid.lastIndexOf("@");
-  if(at<0)return /^\\d+$/.test(jid)?jid+"@s.whatsapp.net":jid;
+  if(at<0)return /^\d+$/.test(jid)?jid+"@s.whatsapp.net":jid;
   return jid.slice(0,at).split(":")[0]+"@"+jid.slice(at+1);
 }
 function phoneFromJid(jid:string){return normalizeJid(jid).split("@")[0];}
