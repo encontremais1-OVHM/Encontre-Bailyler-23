@@ -6,7 +6,7 @@ import helmet from "helmet";
 import QRCode from "qrcode";
 import {createClient} from "@supabase/supabase-js";
 import {z} from "zod";
-import {connect,status,currentQr,currentPairingCode,pairing,logout,getCommunity,isSelfAdmin,isSelfOwner,participantAction,listCommunities,groupParticipants,groupParticipantAction,groupInviteLink,groupProfilePicture,sendTextMessage} from "./whatsapp.js";
+import {connect,status,currentQr,currentPairingCode,pairing,logout,getCommunity,isSelfAdmin,isSelfOwner,participantAction,listCommunities,groupParticipants,groupParticipantAction,groupInviteLink,groupProfilePicture,sendTextMessage,inspectCommunityDiscovery} from "./whatsapp.js";
 
 const env=z.object({
   PORT:z.coerce.number().int().positive().default(8080),
@@ -80,6 +80,10 @@ app.post("/v1/session/pairing-code",...secure,async(req,res)=>{
 app.post("/v1/session/logout",...secure,async(_req,res)=>{
   try{await logout();res.json({ok:true,data:status()});}
   catch(e){res.status(500).json({ok:false,error:"logout_failed",message:e instanceof Error?e.message:"Unknown error"});}
+});
+app.get("/v1/community/diagnostics",...secure,async(_req,res)=>{
+  try{res.json({ok:true,data:await inspectCommunityDiscovery(env.COMMUNITY_JID)});}
+  catch(e){res.status(502).json({ok:false,error:"community_diagnostics_failed",message:e instanceof Error?e.message:"Unknown error"});}
 });
 app.get("/v1/community",...secure,async(_req,res)=>{
   try{
