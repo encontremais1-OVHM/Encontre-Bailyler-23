@@ -114,41 +114,92 @@ export async function logout(){
   if(options)await fs.rm(options.authDir,{recursive:true,force:true});
 }
 export function socket(){return requireSocket();}
-type CommunityMetadata={id:string;subject:string;isCommunity:boolean;participants:Array<{id:string;admin?:string|null}>};
-function child(node:any,tag:string){return (node?.content??[]).find((item:any)=>item?.tag===tag);}
-function children(node:any,tag:string){return (node?.content??[]).filter((item:any)=>item?.tag===tag);}
-function phoneFromJid(jid:string){return jid.split("@")[0].split(":")[0];}
-async function communityQuery(jid:string,type:"get"|"set",content:any[]){
+type CommunityParticipant={id:string;admin?:string|null;phoneNumber?:string|null;lid?:string|null};
+type CommunityMetadata={id:string;subject:string;isCommunity:boolean;participants:CommunityParticipant[]};
+function normalizeJid(value:string){
+  const jid=String(value||"").trim().toLowerCase();
+  if(!jid)return "";
+  const at=jid.lastIndexOf("@");
+  if(at<0)return /^\\d+$/.test(jid)?jid+"@s.whatsapp.net":jid;
+  return jid.slice(0,at).split(":")[0]+"@"+jid.slice(at+1);
+}
+function phoneFromJid(jid:string){return normalizeJid(jid).split("@")[0];}
+async function jidAliases(wa:any,...values:Array<string|null|undefined>){
+  const aliases=new Set<string>();
+  const add=(value:string|null|undefined)=>{
+    if(!value)return;
+    const normalized=normalizeJid(value);
+    if(normalized)aliases.add(normalized);
+  };
+  for(const value of values)add(value);
+  const mapping=wa?.signalRepository?.lidMapping;
+  const initial=[...aliases];
+  for(const jid of initial){
+    try{
+      if(jid.endsWith("@lid")&&typeof mapping?.getPNForLID==="function")add(await mapping.getPNForLID(jid));
+      if(jid.endsWith("@s.whatsapp.net")&&typeof mapping?.getLIDForPN==="function")add(await mapping.getLIDForPN(jid));
+    }catch(error){
+      logger.debug({jid,error:error instanceof Error?error.message:"LID mapping unavailable"},"Could not resolve WhatsApp PN/LID alias");
+    }
+  }
+  return aliases;
+}
+async function sameWhatsAppUser(wa:any,left:CommunityParticipant,rightJid:string){
+  const leftAliases=await jidAliases(wa,left.id,left.phoneNumber,left.lid);
+  const rightAliases=await jidAliases(wa,rightJid);
+  return [...leftAliases].some(alias=>rightAliases.has(alias));
+}
+export async function isSelfAdmin(participants:CommunityParticipant[]){
   const wa=requireSocket() as any;
-  if(typeof wa.query!=="function")throw new Error("This Baileys build does not expose the required WhatsApp community protocol query");
-  return wa.query({tag:"iq",attrs:{type,xmlns:"w:g2",to:jid},content});
+  const selfJid=String(wa.user?.id??"");
+  if(!selfJid)throw new Error("WhatsApp did not expose the connected account identity; administrator permissions cannot be verified");
+  const selfAliases=await jidAliases(wa,selfJid,String(wa.user?.lid??""),String(wa.user?.phoneNumber??""));
+  if(selfAliases.size===0)throw new Error("Could not resolve the connected WhatsApp account identity; administrator permissions cannot be verified");
+  for(const participant of participants){
+    if(participant.admin!=="admin"&&participant.admin!=="superadmin")continue;
+    const participantAliases=await jidAliases(wa,participant.id,participant.phoneNumber,participant.lid);
+    if([...participantAliases].some(alias=>selfAliases.has(alias)))return true;
+  }
+  return false;
 }
 export async function getCommunity(jid:string):Promise<CommunityMetadata>{
-  const result=await communityQuery(jid,"get",[{tag:"query",attrs:{request:"interactive"}}]);
-  const community=child(result,"community");
-  if(!community)throw new Error("WhatsApp did not return community metadata for COMMUNITY_JID");
-  const isCommunity=Boolean(child(community,"parent"));
-  if(!isCommunity)throw new Error("Configured COMMUNITY_JID is not a WhatsApp community");
-  const rawId=String(community.attrs?.id??jid);
+  const wa=requireSocket() as any;
+  // Baileys' groupMetadata uses the w:g2 interactive query and its maintained
+  // extractGroupMetadata parser. Do not parse a guessed <community> node here:
+  // the protocol response is a <group> node and may contain nested attributes.
+  if(typeof wa.groupMetadata!=="function")throw new Error("This Baileys build does not expose groupMetadata for WhatsApp community verification");
+  const metadata=await wa.groupMetadata(jid);
+  if(!metadata||typeof metadata!=="object")throw new Error("WhatsApp returned an empty community metadata response");
+  const returnedId=normalizeJid(String(metadata.id??jid));
+  if(returnedId!==normalizeJid(jid))throw new Error("WhatsApp returned metadata for a different group than the configured COMMUNITY_JID");
+  if(metadata.isCommunity!==true)throw new Error("Configured COMMUNITY_JID was returned as a group, not as a WhatsApp community");
+  if(!Array.isArray(metadata.participants))throw new Error("WhatsApp community metadata did not include a verifiable participants list");
   return {
-    id:rawId.includes("@")?rawId:rawId+"@g.us",
-    subject:String(community.attrs?.subject??""),
+    id:returnedId,
+    subject:String(metadata.subject??""),
     isCommunity:true,
-    participants:children(community,"participant").map((p:any)=>({id:String(p.attrs?.jid??""),admin:p.attrs?.type??null}))
+    participants:metadata.participants.map((p:any)=>({
+      id:String(p.id??p.jid??""),
+      admin:p.admin??null,
+      phoneNumber:p.phoneNumber?String(p.phoneNumber):null,
+      lid:p.lid?String(p.lid):null
+    })).filter((p:CommunityParticipant)=>Boolean(p.id))
   };
 }
 export async function participantAction(jid:string,phone:string,action:"add"|"remove"){
   const wa=requireSocket() as any;
   const meta=await getCommunity(jid);
-  const self=phoneFromJid(String(wa.user?.id??""));
-  const admin=meta.participants.some(p=>phoneFromJid(p.id)===self&&(p.admin==="admin"||p.admin==="superadmin"));
+  const admin=await isSelfAdmin(meta.participants);
   if(!admin)throw new Error("The connected WhatsApp account is not an administrator of the configured community");
   const normalized=phone.replace(/\D/g,"");
   const [existence]=await wa.onWhatsApp(normalized);
   if(!existence?.exists||!existence.jid)throw new Error("The supplied phone number is not registered on WhatsApp");
   const target=String(existence.jid);
   if(action==="remove" && phoneFromJid(target)===self) throw new Error("The connected administrator account cannot remove itself from its community");
-  const existingParticipant=meta.participants.find(p=>p.id===target||phoneFromJid(p.id)===normalized);
+  let existingParticipant:CommunityParticipant|undefined;
+  for(const participant of meta.participants){
+    if(await sameWhatsAppUser(wa,participant,target)){existingParticipant=participant;break;}
+  }
   const already=Boolean(existingParticipant);
   if(action==="remove" && existingParticipant && (existingParticipant.admin==="admin"||existingParticipant.admin==="superadmin")){
     throw new Error("Refusing to remove a community administrator; administrator removal requires a separate manual review");
@@ -174,26 +225,29 @@ export async function listCommunities(configuredJid:string){
   const wa=requireSocket() as any;
   const fetched=await wa.groupFetchAllParticipating();
   const groups=Object.values(fetched||{}) as any[];
-  const byId=new Map(groups.filter(g=>g?.id).map(g=>[String(g.id),g]));
-  if(configuredJid && !byId.has(configuredJid)){
-    const configured=await getCommunity(configuredJid);
-    byId.set(configuredJid,{id:configuredJid,subject:configured.subject,isCommunity:true,participants:configured.participants});
+  const byId=new Map(groups.filter(g=>g?.id).map(g=>[normalizeJid(String(g.id)),g]));
+  if(configuredJid&&!byId.has(normalizeJid(configuredJid))){
+    byId.set(normalizeJid(configuredJid),{id:normalizeJid(configuredJid),subject:"Comunidade WhatsApp",isCommunity:true,participants:[]});
   }
-  const communityGroups=[...byId.values()].filter(g=>g.isCommunity===true || String(g.id)===configuredJid);
+  const communityGroups=[...byId.values()].filter(g=>g.isCommunity===true||normalizeJid(String(g.id))===normalizeJid(configuredJid));
   const result=[];
   for(const group of communityGroups){
-    const id=String(group.id);
+    const id=normalizeJid(String(group.id));
     let meta:any=group;
-    if(id===configuredJid){
-      try{meta={...group,...await getCommunity(id)};}catch{}
-    }else if(!Array.isArray(meta.participants)||meta.participants.length===0){
-      try{meta={...meta,...await wa.groupMetadata(id)};}catch{}
+    let adminStatus:"admin"|"not_admin"|"unknown"="unknown";
+    let adminCheckError:string|null=null;
+    if(id===normalizeJid(configuredJid)){
+      try{meta={...group,...await getCommunity(id)};}
+      catch(error){adminCheckError=error instanceof Error?error.message:"Community metadata could not be verified";}
     }
-    const self=phoneFromJid(String(wa.user?.id??""));
-    const isAdmin=(meta.participants||[]).some((p:any)=>
-      phoneFromJid(String(p.id||p.jid||""))===self&&(p.admin==="admin"||p.admin==="superadmin")
-    );
-    const subgroups=groups.filter(g=>String(g.linkedParent||"")===id);
+    if(!adminCheckError&&Array.isArray(meta.participants)){
+      try{const isAdmin=await isSelfAdmin(meta.participants);adminStatus=isAdmin?"admin":"not_admin";}
+      catch(error){adminCheckError=error instanceof Error?error.message:"Administrator permissions could not be verified";}
+    }else if(!adminCheckError){
+      adminCheckError="WhatsApp did not return a participants list for this community";
+    }
+    const isAdmin=adminStatus==="admin"?true:adminStatus==="not_admin"?false:null;
+    const subgroups=groups.filter(g=>normalizeJid(String(g.linkedParent||""))===id);
     const profile=await wa.profilePictureUrl(id,"image").catch(()=>null);
     const childrenWithPictures=[];
     for(const childGroup of subgroups){
@@ -212,6 +266,8 @@ export async function listCommunities(configuredJid:string){
       description:meta.desc?String(meta.desc):null,
       profile_picture_url:profile||null,
       isAdmin,
+      admin_status:adminStatus,
+      admin_check_error:adminCheckError,
       subgroups:childrenWithPictures,
     });
   }
@@ -243,9 +299,8 @@ export async function groupParticipantAction(jid:string,phone:string,action:"add
   if(jid===configuredJid)return participantAction(jid,phone,action);
   const metadata:any=await wa.groupMetadata(jid);
   if(metadata.isCommunity)return participantAction(jid,phone,action);
-  const self=phoneFromJid(String(wa.user?.id??""));
-  const selfParticipant=(metadata.participants||[]).find((p:any)=>phoneFromJid(String(p.id||""))===self);
-  if(!selfParticipant||!(selfParticipant.admin==="admin"||selfParticipant.admin==="superadmin")){
+  const selfIsAdmin=await isSelfAdmin(Array.isArray(metadata.participants)?metadata.participants:[]);
+  if(!selfIsAdmin){
     throw new Error("The connected WhatsApp account is not an administrator of this group");
   }
   const normalized=phone.replace(/\D/g,"");
@@ -254,7 +309,10 @@ export async function groupParticipantAction(jid:string,phone:string,action:"add
   if(!existence?.exists||!existence.jid)throw new Error("The supplied phone number is not registered on WhatsApp");
   const target=String(existence.jid);
   if(action==="remove"&&phoneFromJid(target)===self)throw new Error("The connected administrator account cannot remove itself");
-  const existing=(metadata.participants||[]).find((p:any)=>phoneFromJid(String(p.id||""))===normalized);
+  let existing:any;
+  for(const participant of (metadata.participants||[])){
+    if(await sameWhatsAppUser(wa,{id:String(participant.id||""),admin:participant.admin,phoneNumber:participant.phoneNumber,lid:participant.lid},target)){existing=participant;break;}
+  }
   if(action==="remove"&&existing&&(existing.admin==="admin"||existing.admin==="superadmin")){
     throw new Error("Refusing to remove a group administrator");
   }
