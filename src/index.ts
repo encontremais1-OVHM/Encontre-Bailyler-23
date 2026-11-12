@@ -99,7 +99,14 @@ app.post("/internal/whatsapp/participants/add",async(req,res)=>{
     }
     res.status(202).json({ok:true,data:result,confirmation:"Request submitted; membership is pending the signed WhatsApp participant event."});
   }catch(error){
-    console.error("Internal WhatsApp access operation failed",error instanceof Error?error.message:"unknown error");
+    const failure=error as any;
+    console.error("Internal WhatsApp access operation failed",{
+      errorName:failure?.name??null,
+      message:failure?.message??String(error),
+      statusCode:failure?.output?.statusCode??failure?.statusCode??null,
+      outputPayload:failure?.output?.payload??null,
+      stack:failure?.stack??null,
+    });
     res.status(502).json({ok:false,error:"internal_whatsapp_access_failed",message:error instanceof Error?error.message:"Unknown error"});
   }
 });
