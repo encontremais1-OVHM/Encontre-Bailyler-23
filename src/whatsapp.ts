@@ -457,23 +457,50 @@ export async function participantAction(jid:string,phone:string,action:"add"|"re
   if(action==="remove"&&!already)return {phone:normalized,action,status:"not_member",jid:target};
   const communityJid=meta.id;
   let waStatus="200";
-  if(typeof wa.communityParticipantsUpdate==="function"){
-    const updates=await wa.communityParticipantsUpdate(communityJid,[target],action);
-    const update=Array.isArray(updates)?updates.find((item:any)=>normalizeJid(String(item.jid||""))===normalizeJid(target))??updates[0]:null;
-    if(!update)throw new Error("WhatsApp returned no per-participant result; operation is not confirmed");
-    waStatus=String(update.status??"200");
-  }else{
-    const response=await communityQuery(communityJid,"set",[
-      {
-        tag:action,
-        attrs:action==="remove"?{linked_groups:"true"}:{},
-        content:[{tag:"participant",attrs:{jid:target}}]
+  try {
+    if(typeof wa.communityParticipantsUpdate==="function"){
+      const updates=await wa.communityParticipantsUpdate(communityJid,[target],action);
+      const update=Array.isArray(updates)?updates.find((item:any)=>normalizeJid(String(item.jid||""))===normalizeJid(target))??updates[0]:null;
+      if(!update)throw new Error("WhatsApp returned no per-participant result; operation is not confirmed");
+      waStatus=String(update.status??"200");
+    }else{
+      const response=await communityQuery(communityJid,"set",[
+        {
+          tag:action,
+          attrs:action==="remove"?{linked_groups:"true"}:{},
+          content:[{tag:"participant",attrs:{jid:target}}]
+        }
+      ]);
+      const resultNode=findNode(response,action);
+      const participant=findNodes(resultNode,"participant").find((p:any)=>p.attrs?.jid===target);
+      if(!participant)throw new Error("WhatsApp returned no per-participant result; operation is not confirmed");
+      waStatus=String(participant.attrs?.error??"200");
+    }
+  } catch(error) {
+    const failure=error as any;
+    // A failed add can race with a successful WhatsApp-side change or a stale
+    // metadata snapshot. Only reconcile it as successful when fresh metadata
+    // proves the participant is already present; otherwise preserve the error.
+    if(action==="add") {
+      const refreshed:any=await (typeof wa.communityMetadata==="function"
+        ? wa.communityMetadata(communityJid).catch(()=>null)
+        : wa.groupMetadata(communityJid).catch(()=>null));
+      for(const participant of (Array.isArray(refreshed?.participants)?refreshed.participants:[])) {
+        if(await sameWhatsAppUser(wa,participant,target)) {
+          return {phone:normalized,action,status:"already_member",jid:target,communityJid,verifiedAfterError:true};
+        }
       }
-    ]);
-    const resultNode=findNode(response,action);
-    const participant=findNodes(resultNode,"participant").find((p:any)=>p.attrs?.jid===target);
-    if(!participant)throw new Error("WhatsApp returned no per-participant result; operation is not confirmed");
-    waStatus=String(participant.attrs?.error??"200");
+    }
+    logger.error({
+      action,
+      communityJid,
+      errorName:failure?.name??null,
+      errorMessage:failure?.message??String(error),
+      statusCode:failure?.output?.statusCode??failure?.statusCode??null,
+      outputPayload:failure?.output?.payload??null,
+      stack:failure?.stack??null,
+    },"WhatsApp community participant update failed");
+    throw error;
   }
   if(waStatus==="409"&&action==="add"){
     const refreshed:any=await (typeof wa.communityMetadata==="function"
