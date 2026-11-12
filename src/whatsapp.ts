@@ -114,7 +114,7 @@ export async function logout(){
   if(options)await fs.rm(options.authDir,{recursive:true,force:true});
 }
 export function socket(){return requireSocket();}
-type CommunityParticipant={id:string;admin?:string|null;phoneNumber?:string|null;lid?:string|null};
+type CommunityParticipant={id:string;admin?:string|null;phoneNumber?:string|null;lid?:string|null;isAdmin?:boolean;isSuperAdmin?:boolean};
 type CommunityMetadata={id:string;subject:string;isCommunity:boolean;participants:CommunityParticipant[];owner:string|null;ownerPn:string|null};
 function findNode(node:any,tag:string){return Array.isArray(node?.content)?node.content.find((item:any)=>item?.tag===tag)??null:null;}
 function findNodes(node:any,tag:string){return Array.isArray(node?.content)?node.content.filter((item:any)=>item?.tag===tag):[];}
