@@ -229,13 +229,16 @@ type CommunitySnapshot={groups:any[];exact:any|null;communityCandidates:any[];li
 async function fetchCommunitySnapshot(wa:any,jid:string):Promise<CommunitySnapshot>{
   const byId=new Map<string,any>();
   let communityFetchError:string|null=null;
+  let communityFetchCount=0;
   // The library exposes a dedicated community list as well as the general
   // participating-groups list. Prefer to merge both because some WhatsApp
   // sessions return child groups in the latter but the root only in the former.
   if(typeof wa.communityFetchAllParticipating==="function"){
     try{
       const communities=await wa.communityFetchAllParticipating();
-      for(const item of Object.values(communities||{}) as any[]){
+      const communityItems=Object.values(communities||{}) as any[];
+      communityFetchCount=communityItems.filter((item:any)=>item?.isCommunity===true).length;
+      for(const item of communityItems){
         if(item?.id)byId.set(normalizeJid(String(item.id)),item);
       }
     }catch(error){
@@ -257,7 +260,7 @@ async function fetchCommunitySnapshot(wa:any,jid:string):Promise<CommunitySnapsh
     exact:groups.find((item:any)=>normalizeJid(String(item.id))===normalized)??null,
     communityCandidates:groups.filter((item:any)=>item.isCommunity===true),
     linkedChildren:groups.filter((item:any)=>normalizeJid(String(item.linkedParent||""))===normalized),
-    communityFetchCount:typeof wa.communityFetchAllParticipating==="function"?groups.filter((item:any)=>item.isCommunity===true).length:0,
+    communityFetchCount,
     communityFetchError,
   };
 }
