@@ -302,6 +302,7 @@ type CommunitySnapshot={groups:any[];exact:any|null;communityCandidates:any[];li
 let communitySnapshotCache:{socket:any;fetchedAt:number;snapshot:CommunitySnapshot}|null=null;
 let communitySnapshotInFlight:Promise<CommunitySnapshot>|null=null;
 let communitySnapshotCooldownUntil=0;
+let communitySnapshotCooldownMs=60_000;
 const profilePictureCache=new Map<string,{url:string|null;expiresAt:number}>();
 const profilePictureInFlight=new Map<string,Promise<string|null>>();
 function isRateLimitError(error:unknown){const message=error instanceof Error?error.message:String(error??"");return /rate[-_ ]?overlimit|rate.?limit|too many requests|http.?429/i.test(message);}
@@ -315,16 +316,20 @@ async function fetchCommunitySnapshot(wa:any,jid:string):Promise<CommunitySnapsh
     const byId=new Map<string,any>();let communityFetchError:string|null=null;let groupFetchError:string|null=null;let communityFetchCount=0;
     if(typeof wa.communityFetchAllParticipating==="function"){
       try{const communities=await wa.communityFetchAllParticipating();const items=Object.values(communities||{}) as any[];communityFetchCount=items.filter((item:any)=>item?.isCommunity===true).length;for(const item of items){if(item?.id)byId.set(normalizeJid(String(item.id)),item);}}
-      catch(error){communityFetchError=error instanceof Error?error.message:String(error);logger.warn({error:communityFetchError},"Baileys communityFetchAllParticipating failed");if(isRateLimitError(error))throw error;}
+      catch(error){communityFetchError=error instanceof Error?error.message:String(error);logger.warn({error:communityFetchError},"Baileys communityFetchAllParticipating failed");
+        // A rate limit on the dedicated Community query must not prevent the
+        // general participating-groups query from supplying the same root and
+        // linked announcement group metadata.
+      }
     }
     try{const fetched=await wa.groupFetchAllParticipating();for(const item of Object.values(fetched||{}) as any[]){if(item?.id){const id=normalizeJid(String(item.id));byId.set(id,{...(byId.get(id)||{}),...item});}}}
     catch(error){groupFetchError=error instanceof Error?error.message:String(error);logger.warn({error:groupFetchError,communityFetchCount},"Baileys groupFetchAllParticipating failed");if(byId.size===0)throw error;}
     const groups=[...byId.values()];const normalized=normalizeJid(jid);
     const snapshot:CommunitySnapshot={groups,exact:groups.find((item:any)=>normalizeJid(String(item.id))===normalized)??null,communityCandidates:groups.filter((item:any)=>item.isCommunity===true),linkedChildren:groups.filter((item:any)=>normalizeJid(String(item.linkedParent||""))===normalized),communityFetchCount,communityFetchError,groupFetchError};
-    communitySnapshotCache={socket:wa,fetchedAt:Date.now(),snapshot};communitySnapshotCooldownUntil=0;return snapshot;
+    communitySnapshotCache={socket:wa,fetchedAt:Date.now(),snapshot};communitySnapshotCooldownUntil=0;communitySnapshotCooldownMs=60_000;return snapshot;
   })();
   communitySnapshotInFlight=task;
-  try{return await task;}catch(error){if(isRateLimitError(error)){communitySnapshotCooldownUntil=Date.now()+60_000;if(cached)return cached.snapshot;}throw error;}finally{communitySnapshotInFlight=null;}
+  try{return await task;}catch(error){if(isRateLimitError(error)){const cooldown=communitySnapshotCooldownMs;communitySnapshotCooldownUntil=Date.now()+cooldown;communitySnapshotCooldownMs=Math.min(cooldown*2,30*60_000);if(cached)return cached.snapshot;}throw error;}finally{communitySnapshotInFlight=null;}
 }
 function metadataFailure(error:unknown){
   const statusCode=(error as any)?.output?.statusCode??(error as any)?.statusCode??null;
@@ -472,13 +477,10 @@ async function optionalLidFor(wa:any,target:string):Promise<string|null>{
 }
 async function findAnnouncementGroup(wa:any,communityJid:string):Promise<{jid:string;subject:string}|null>{
   const root=normalizeJid(communityJid);
-  let children:any[]=[];
-  try{
-    const snapshot=await fetchCommunitySnapshot(wa,root);
-    children=snapshot.groups.filter((item:any)=>normalizeJid(String(item?.linkedParent||""))===root);
-  }catch(error){
-    logger.warn({communityJid:root,error:error instanceof Error?error.message:String(error)},"Could not list Community linked groups");
-  }
+  // Discovery errors must propagate. Returning null on rate limiting used to
+  // trigger an unsafe fallback that attempted to add directly to the root.
+  const snapshot=await fetchCommunitySnapshot(wa,root);
+  const children=snapshot.groups.filter((item:any)=>normalizeJid(String(item?.linkedParent||""))===root);
   const flagged=children.find((item:any)=>item?.isCommunityAnnounce===true);
   if(flagged)return {jid:normalizeJid(String(flagged.id)),subject:String(flagged.subject||"")};
   for(const child of children){
@@ -605,11 +607,11 @@ export async function participantAction(jid:string,phone:string,action:"add"|"re
   const communityJid=meta.id;
   if(action==="add"){
     const announcement=await findAnnouncementGroup(wa,communityJid);
-    if(announcement){
-      const outcome=await addToGroupWithFallback(wa,{groupJid:announcement.jid,groupName:meta.subject,inviteJid:communityJid},normalized,target);
-      return {...outcome,communityJid,announcementJid:announcement.jid};
+    if(!announcement){
+      throw new Error("Community announcements group could not be identified; refusing to add directly to the Community root");
     }
-    logger.warn({communityJid},"Community announcements group not found; falling back to direct Community add");
+    const outcome=await addToGroupWithFallback(wa,{groupJid:announcement.jid,groupName:meta.subject,inviteJid:communityJid},normalized,target);
+    return {...outcome,communityJid,announcementJid:announcement.jid};
   }
   const writeTarget=await participantJidForAddressingMode(wa,target,meta.addressingMode);
   let waStatus="200";
