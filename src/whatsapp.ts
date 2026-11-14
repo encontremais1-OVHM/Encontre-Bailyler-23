@@ -302,6 +302,7 @@ type CommunitySnapshot={groups:any[];exact:any|null;communityCandidates:any[];li
 let communitySnapshotCache:{socket:any;fetchedAt:number;snapshot:CommunitySnapshot}|null=null;
 let communitySnapshotInFlight:Promise<CommunitySnapshot>|null=null;
 let communitySnapshotCooldownUntil=0;
+let communitySnapshotCooldownMs=60_000;
 const profilePictureCache=new Map<string,{url:string|null;expiresAt:number}>();
 const profilePictureInFlight=new Map<string,Promise<string|null>>();
 function isRateLimitError(error:unknown){const message=error instanceof Error?error.message:String(error??"");return /rate[-_ ]?overlimit|rate.?limit|too many requests|http.?429/i.test(message);}
@@ -315,16 +316,20 @@ async function fetchCommunitySnapshot(wa:any,jid:string):Promise<CommunitySnapsh
     const byId=new Map<string,any>();let communityFetchError:string|null=null;let groupFetchError:string|null=null;let communityFetchCount=0;
     if(typeof wa.communityFetchAllParticipating==="function"){
       try{const communities=await wa.communityFetchAllParticipating();const items=Object.values(communities||{}) as any[];communityFetchCount=items.filter((item:any)=>item?.isCommunity===true).length;for(const item of items){if(item?.id)byId.set(normalizeJid(String(item.id)),item);}}
-      catch(error){communityFetchError=error instanceof Error?error.message:String(error);logger.warn({error:communityFetchError},"Baileys communityFetchAllParticipating failed");if(isRateLimitError(error))throw error;}
+      catch(error){communityFetchError=error instanceof Error?error.message:String(error);logger.warn({error:communityFetchError},"Baileys communityFetchAllParticipating failed");
+        // A rate limit on the dedicated Community query must not prevent the
+        // general participating-groups query from supplying the same root and
+        // linked announcement group metadata.
+      }
     }
     try{const fetched=await wa.groupFetchAllParticipating();for(const item of Object.values(fetched||{}) as any[]){if(item?.id){const id=normalizeJid(String(item.id));byId.set(id,{...(byId.get(id)||{}),...item});}}}
     catch(error){groupFetchError=error instanceof Error?error.message:String(error);logger.warn({error:groupFetchError,communityFetchCount},"Baileys groupFetchAllParticipating failed");if(byId.size===0)throw error;}
     const groups=[...byId.values()];const normalized=normalizeJid(jid);
     const snapshot:CommunitySnapshot={groups,exact:groups.find((item:any)=>normalizeJid(String(item.id))===normalized)??null,communityCandidates:groups.filter((item:any)=>item.isCommunity===true),linkedChildren:groups.filter((item:any)=>normalizeJid(String(item.linkedParent||""))===normalized),communityFetchCount,communityFetchError,groupFetchError};
-    communitySnapshotCache={socket:wa,fetchedAt:Date.now(),snapshot};communitySnapshotCooldownUntil=0;return snapshot;
+    communitySnapshotCache={socket:wa,fetchedAt:Date.now(),snapshot};communitySnapshotCooldownUntil=0;communitySnapshotCooldownMs=60_000;return snapshot;
   })();
   communitySnapshotInFlight=task;
-  try{return await task;}catch(error){if(isRateLimitError(error)){communitySnapshotCooldownUntil=Date.now()+60_000;if(cached)return cached.snapshot;}throw error;}finally{communitySnapshotInFlight=null;}
+  try{return await task;}catch(error){if(isRateLimitError(error)){const cooldown=communitySnapshotCooldownMs;communitySnapshotCooldownUntil=Date.now()+cooldown;communitySnapshotCooldownMs=Math.min(cooldown*2,30*60_000);if(cached)return cached.snapshot;}throw error;}finally{communitySnapshotInFlight=null;}
 }
 function metadataFailure(error:unknown){
   const statusCode=(error as any)?.output?.statusCode??(error as any)?.statusCode??null;
@@ -442,6 +447,140 @@ export async function inspectCommunityDiscovery(jid:string){
     },
   };
 }
+// ---------------------------------------------------------------------------
+// Community entry. WhatsApp rejects direct "add" requests sent to a Community
+// root with `bad-request`. The WhatsApp app adds Community members through the
+// Community announcements group (default_sub_group); a participant added there
+// becomes a member of the Community automatically. When the participant's
+// privacy settings block direct adds (403) or they recently left (408),
+// WhatsApp expects an invite to be sent instead, exactly like the official app.
+// ---------------------------------------------------------------------------
+type AddOutcome={phone:string;action:"add";status:"added_verified"|"request_submitted"|"already_member"|"invite_sent";jid:string;whatsappStatus?:string;inviteMethod?:string};
+const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
+async function optionalLidFor(wa:any,target:string):Promise<string|null>{
+  if(isLidJid(target))return target;
+  try{
+    const mapping=wa?.signalRepository?.lidMapping;
+    if(typeof mapping?.getLIDForPN==="function"){
+      const lid=await mapping.getLIDForPN(target);
+      if(typeof lid==="string"&&isLidJid(normalizeJid(lid)))return normalizeJid(lid);
+    }
+  }catch{}
+  try{
+    if(typeof wa.findUserId==="function"){
+      const mapped=await wa.findUserId(target);
+      const lid=typeof mapped?.lid==="string"?normalizeJid(mapped.lid):"";
+      if(isLidJid(lid))return lid;
+    }
+  }catch{}
+  return null;
+}
+async function findAnnouncementGroup(wa:any,communityJid:string):Promise<{jid:string;subject:string}|null>{
+  const root=normalizeJid(communityJid);
+  // Discovery errors must propagate. Returning null on rate limiting used to
+  // trigger an unsafe fallback that attempted to add directly to the root.
+  const snapshot=await fetchCommunitySnapshot(wa,root);
+  const children=snapshot.groups.filter((item:any)=>normalizeJid(String(item?.linkedParent||""))===root);
+  const flagged=children.find((item:any)=>item?.isCommunityAnnounce===true);
+  if(flagged)return {jid:normalizeJid(String(flagged.id)),subject:String(flagged.subject||"")};
+  for(const child of children){
+    try{
+      const meta=await wa.groupMetadata(String(child.id));
+      if(meta?.isCommunityAnnounce===true)return {jid:normalizeJid(String(meta.id)),subject:String(meta.subject||"")};
+    }catch(error){
+      logger.warn({groupJid:String(child.id),error:error instanceof Error?error.message:String(error)},"Could not read linked group metadata");
+    }
+  }
+  return null;
+}
+async function groupHasParticipant(wa:any,groupJid:string,target:string){
+  const meta:any=await wa.groupMetadata(groupJid).catch(()=>null);
+  for(const participant of (Array.isArray(meta?.participants)?meta.participants:[])){
+    if(await sameWhatsAppUser(wa,{id:String(participant.id||""),phoneNumber:participant.phoneNumber,lid:participant.lid},target))return true;
+  }
+  return false;
+}
+export async function isParticipantInGroup(groupJid:string,phone:string):Promise<string|null>{
+  const wa=requireSocket() as any;
+  const normalized=String(phone||"").replace(/\D/g,"");
+  const target=normalized+"@s.whatsapp.net";
+  const jid=normalizeJid(groupJid);
+  try{
+    const community=await getCommunity(jid);
+    if(normalizeJid(community.id)===jid){
+      for(const participant of community.participants){
+        if(await sameWhatsAppUser(wa,participant,target))return target;
+      }
+      return null;
+    }
+  }catch{}
+  return (await groupHasParticipant(wa,jid,target))?target:null;
+}
+async function sendJoinInvite(wa:any,normalized:string,groupJid:string,groupName:string,inviteJid:string,addRequest:any){
+  const recipient=normalized+"@s.whatsapp.net";
+  const caption="Olá! A sua inscrição na Encontre + foi aprovada. As definições de privacidade do seu WhatsApp não permitem que o adicionemos automaticamente. Toque no convite para entrar na Comunidade "+(groupName||"Encontre +")+".";
+  const code=addRequest?.attrs?.code?String(addRequest.attrs.code):"";
+  const expiration=Number(addRequest?.attrs?.expiration||0);
+  if(code){
+    try{
+      await wa.sendMessage(recipient,{groupInvite:{jid:groupJid,inviteCode:code,inviteExpiration:expiration||Math.floor(Date.now()/1000)+3*86400,subject:groupName||"Encontre +",text:caption}});
+      return "group_invite_message";
+    }catch(error){
+      logger.warn({error:error instanceof Error?error.message:String(error)},"Native WhatsApp group invite message failed; falling back to invite link");
+    }
+  }
+  let link="";
+  for(const jid of [inviteJid,groupJid]){
+    try{const inviteCode=await wa.groupInviteCode(jid);if(inviteCode){link="https://chat.whatsapp.com/"+inviteCode;break;}}catch{}
+  }
+  if(!link)throw new Error("O WhatsApp bloqueou a adição directa e não foi possível gerar um convite para este número");
+  await wa.sendMessage(recipient,{text:caption+"\n\n"+link});
+  return "invite_link_message";
+}
+async function addToGroupWithFallback(wa:any,opts:{groupJid:string;groupName:string;inviteJid:string},normalized:string,target:string):Promise<AddOutcome>{
+  const candidates=[target];
+  const lid=await optionalLidFor(wa,target);
+  if(lid&&!candidates.includes(lid))candidates.push(lid);
+  let update:any=null;let usedJid=target;let lastError:unknown=null;
+  for(const candidate of candidates){
+    const isLast=candidate===candidates[candidates.length-1];
+    try{
+      const response=await wa.groupParticipantsUpdate(opts.groupJid,[candidate],"add");
+      update=Array.isArray(response)?response[0]:null;
+      usedJid=candidate;
+      const st=String(update?.status??"");
+      if((st==="400"||st==="bad-request")&&!isLast){update=null;continue;}
+      break;
+    }catch(error){
+      lastError=error;
+      const message=error instanceof Error?error.message:String(error);
+      logger.warn({groupJid:opts.groupJid,candidateType:isLidJid(candidate)?"lid":"pn",error:message},"WhatsApp group add attempt failed");
+      if(/bad-request/i.test(message)&&!isLast)continue;
+      throw error;
+    }
+  }
+  if(!update){
+    if(lastError)throw lastError;
+    throw new Error("WhatsApp returned no per-participant result; operation is not confirmed");
+  }
+  const waStatus=String(update.status??"200");
+  logger.info({groupJid:opts.groupJid,waStatus,candidateType:isLidJid(usedJid)?"lid":"pn"},"WhatsApp group add result");
+  if(waStatus==="200"||waStatus==="409"){
+    for(let i=0;i<3;i++){
+      if(await groupHasParticipant(wa,opts.groupJid,target))return {phone:normalized,action:"add",status:waStatus==="409"?"already_member":"added_verified",jid:target,whatsappStatus:waStatus};
+      await sleep(1500);
+    }
+    if(waStatus==="200")return {phone:normalized,action:"add",status:"request_submitted",jid:target,whatsappStatus:waStatus};
+  }
+  if(waStatus==="403"||waStatus==="408"){
+    const addRequest=findNode(update.content,"add_request");
+    const inviteMethod=await sendJoinInvite(wa,normalized,opts.groupJid,opts.groupName,opts.inviteJid,addRequest);
+    return {phone:normalized,action:"add",status:"invite_sent",jid:target,whatsappStatus:waStatus,inviteMethod};
+  }
+  if(waStatus==="401")throw new Error("Este número bloqueou a conta WhatsApp da Encontre + (status 401)");
+  throw new Error("WhatsApp did not accept the group participant operation (status "+waStatus+")");
+}
+
 export async function participantAction(jid:string,phone:string,action:"add"|"remove"){
   const wa=requireSocket() as any;
   const meta=await getCommunity(jid);
@@ -449,7 +588,6 @@ export async function participantAction(jid:string,phone:string,action:"add"|"re
   if(admin===null)throw new Error("The connected WhatsApp account's administrator permissions could not be verified because a PN/LID identity mapping is missing");
   if(!admin)throw new Error("The connected WhatsApp account is not an administrator of the configured community");
   const {normalized,target}=await resolveWhatsAppParticipant(wa,phone);
-  const writeTarget=await participantJidForAddressingMode(wa,target,meta.addressingMode);
   if(action==="remove" && await sameWhatsAppUser(wa,{id:String(wa.user?.id??"")},target)) throw new Error("The connected administrator account cannot remove itself from its community");
   if(action==="remove"){
     const ownerAliases=await jidAliases(wa,meta.owner,meta.ownerPn);
@@ -467,6 +605,15 @@ export async function participantAction(jid:string,phone:string,action:"add"|"re
   if(action==="add"&&already)return {phone:normalized,action,status:"already_member",jid:target};
   if(action==="remove"&&!already)return {phone:normalized,action,status:"not_member",jid:target};
   const communityJid=meta.id;
+  if(action==="add"){
+    const announcement=await findAnnouncementGroup(wa,communityJid);
+    if(!announcement){
+      throw new Error("Community announcements group could not be identified; refusing to add directly to the Community root");
+    }
+    const outcome=await addToGroupWithFallback(wa,{groupJid:announcement.jid,groupName:meta.subject,inviteJid:communityJid},normalized,target);
+    return {...outcome,communityJid,announcementJid:announcement.jid};
+  }
+  const writeTarget=await participantJidForAddressingMode(wa,target,meta.addressingMode);
   let waStatus="200";
   try {
     if(typeof wa.communityParticipantsUpdate==="function"){
@@ -489,19 +636,6 @@ export async function participantAction(jid:string,phone:string,action:"add"|"re
     }
   } catch(error) {
     const failure=error as any;
-    // A failed add can race with a successful WhatsApp-side change or a stale
-    // metadata snapshot. Only reconcile it as successful when fresh metadata
-    // proves the participant is already present; otherwise preserve the error.
-    if(action==="add") {
-      const refreshed:any=await (typeof wa.communityMetadata==="function"
-        ? wa.communityMetadata(communityJid).catch(()=>null)
-        : wa.groupMetadata(communityJid).catch(()=>null));
-      for(const participant of (Array.isArray(refreshed?.participants)?refreshed.participants:[])) {
-        if(await sameWhatsAppUser(wa,participant,target)) {
-          return {phone:normalized,action,status:"already_member",jid:target,communityJid,verifiedAfterError:true};
-        }
-      }
-    }
     logger.error({
       action,
       communityJid,
@@ -513,18 +647,8 @@ export async function participantAction(jid:string,phone:string,action:"add"|"re
     },"WhatsApp community participant update failed");
     throw error;
   }
-  if(waStatus==="409"&&action==="add"){
-    const refreshed:any=await (typeof wa.communityMetadata==="function"
-      ? wa.communityMetadata(communityJid).catch(()=>null)
-      : wa.groupMetadata(communityJid).catch(()=>null));
-    for(const participant of (Array.isArray(refreshed?.participants)?refreshed.participants:[])){
-      if(await sameWhatsAppUser(wa,participant,target)){
-        return {phone:normalized,action,status:"already_member",jid:target,communityJid,whatsappStatus:waStatus};
-      }
-    }
-  }
   if(waStatus!=="200")throw new Error("WhatsApp rejected the community "+action+" operation (status "+waStatus+")");
-  return {phone:normalized,action,status:"request_submitted",jid:target,communityJid,whatsappStatus:waStatus,removesFromLinkedGroups:action==="remove"};
+  return {phone:normalized,action,status:"request_submitted",jid:target,communityJid,whatsappStatus:waStatus,removesFromLinkedGroups:true};
 }
 
 export async function listCommunities(configuredJid:string){
@@ -650,7 +774,6 @@ export async function groupParticipantAction(jid:string,phone:string,action:"add
     throw new Error("The connected WhatsApp account is not an administrator of this group");
   }
   const {normalized,target}=await resolveWhatsAppParticipant(wa,phone);
-  const writeTarget=await participantJidForAddressingMode(wa,target,metadata.addressingMode);
   if(action==="remove"&&await sameWhatsAppUser(wa,{id:String(wa.user?.id??"")},target))throw new Error("The connected administrator account cannot remove itself");
   let existing:any;
   for(const participant of (metadata.participants||[])){
@@ -661,17 +784,13 @@ export async function groupParticipantAction(jid:string,phone:string,action:"add
   }
   if(action==="add"&&existing)return {phone:normalized,action,status:"already_member",jid:target};
   if(action==="remove"&&!existing)return {phone:normalized,action,status:"not_member",jid:target};
+  if(action==="add"){
+    return addToGroupWithFallback(wa,{groupJid:normalizedJid,groupName:String(metadata.subject||""),inviteJid:normalizedJid},normalized,target);
+  }
+  const writeTarget=await participantJidForAddressingMode(wa,target,metadata.addressingMode);
   const response=await wa.groupParticipantsUpdate(normalizedJid,[writeTarget],action);
   const result=Array.isArray(response)?response[0]:null;
   const resultStatus=String(result?.status||"200");
-  if(action==="add"&&resultStatus==="409"){
-    const refreshed:any=await wa.groupMetadata(normalizedJid).catch(()=>null);
-    for(const participant of (Array.isArray(refreshed?.participants)?refreshed.participants:[])){
-      if(await sameWhatsAppUser(wa,{id:String(participant.id||""),admin:participant.admin,phoneNumber:participant.phoneNumber,lid:participant.lid},target)){
-        return {phone:normalized,action,status:"already_member",jid:target,whatsappStatus:resultStatus};
-      }
-    }
-  }
   if(!result||resultStatus!=="200")throw new Error("WhatsApp did not accept the group participant operation (status "+resultStatus+")");
   return {phone:normalized,action,status:"request_submitted",jid:target,whatsappStatus:resultStatus};
 }
