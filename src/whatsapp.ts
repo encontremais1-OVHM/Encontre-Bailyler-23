@@ -636,19 +636,6 @@ export async function participantAction(jid:string,phone:string,action:"add"|"re
     }
   } catch(error) {
     const failure=error as any;
-    // A failed add can race with a successful WhatsApp-side change or a stale
-    // metadata snapshot. Only reconcile it as successful when fresh metadata
-    // proves the participant is already present; otherwise preserve the error.
-    if(action==="add") {
-      const refreshed:any=await (typeof wa.communityMetadata==="function"
-        ? wa.communityMetadata(communityJid).catch(()=>null)
-        : wa.groupMetadata(communityJid).catch(()=>null));
-      for(const participant of (Array.isArray(refreshed?.participants)?refreshed.participants:[])) {
-        if(await sameWhatsAppUser(wa,participant,target)) {
-          return {phone:normalized,action,status:"already_member",jid:target,communityJid,verifiedAfterError:true};
-        }
-      }
-    }
     logger.error({
       action,
       communityJid,
@@ -660,18 +647,8 @@ export async function participantAction(jid:string,phone:string,action:"add"|"re
     },"WhatsApp community participant update failed");
     throw error;
   }
-  if(waStatus==="409"&&action==="add"){
-    const refreshed:any=await (typeof wa.communityMetadata==="function"
-      ? wa.communityMetadata(communityJid).catch(()=>null)
-      : wa.groupMetadata(communityJid).catch(()=>null));
-    for(const participant of (Array.isArray(refreshed?.participants)?refreshed.participants:[])){
-      if(await sameWhatsAppUser(wa,participant,target)){
-        return {phone:normalized,action,status:"already_member",jid:target,communityJid,whatsappStatus:waStatus};
-      }
-    }
-  }
   if(waStatus!=="200")throw new Error("WhatsApp rejected the community "+action+" operation (status "+waStatus+")");
-  return {phone:normalized,action,status:"request_submitted",jid:target,communityJid,whatsappStatus:waStatus,removesFromLinkedGroups:action==="remove"};
+  return {phone:normalized,action,status:"request_submitted",jid:target,communityJid,whatsappStatus:waStatus,removesFromLinkedGroups:true};
 }
 
 export async function listCommunities(configuredJid:string){
