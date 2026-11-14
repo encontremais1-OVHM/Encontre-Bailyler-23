@@ -6,7 +6,7 @@ import helmet from "helmet";
 import QRCode from "qrcode";
 import {createClient} from "@supabase/supabase-js";
 import {z} from "zod";
-import {connect,status,currentQr,currentPairingCode,pairing,logout,getCommunity,isSelfAdmin,isSelfOwner,participantAction,listCommunities,groupParticipants,groupParticipantAction,groupInviteLink,groupProfilePicture,sendTextMessage,inspectCommunityDiscovery,resolveWhatsAppPhoneNumber} from "./whatsapp.js";
+import {connect,status,currentQr,currentPairingCode,pairing,logout,getCommunity,isSelfAdmin,isSelfOwner,participantAction,listCommunities,groupParticipants,groupParticipantAction,groupInviteLink,groupProfilePicture,sendTextMessage,inspectCommunityDiscovery,resolveWhatsAppPhoneNumber,isParticipantInGroup} from "./whatsapp.js";
 
 const env=z.object({
   PORT:z.coerce.number().int().positive().default(8080),
@@ -61,7 +61,7 @@ app.post("/internal/whatsapp/participants/add",async(req,res)=>{
     }
     const payload=parsed.data;
     const {data:operation,error:operationError}=await db.from("access_operations")
-      .select("id,member_id,whatsapp_group_id,operation_type,status")
+      .select("id,member_id,whatsapp_group_id,operation_type,status,external_operation_id")
       .eq("id",payload.operation_id).maybeSingle();
     if(operationError)throw operationError;
     if(!operation||operation.operation_type!=="add"||operation.status!=="processing"){
@@ -91,10 +91,37 @@ app.post("/internal/whatsapp/participants/add",async(req,res)=>{
       res.status(200).json({ok:true,data:{status:"already_member",phone:payload.phone,action:"add"}});
       return;
     }
-    const result=await groupParticipantAction(group.external_group_id,payload.phone,"add",env.COMMUNITY_JID);
-    if(result.status==="already_member"){
-      await forwardParticipantEvents({action:"add",id:group.external_group_id,participants:[result.jid]});
-      res.status(200).json({ok:true,data:result,confirmation:"Existing WhatsApp membership verified and reconciled."});
+    const participantJid=payload.phone+"@s.whatsapp.net";
+    // An invite was already sent for this operation: never spam the person.
+    // Only check whether they have joined in the meantime (missed event).
+    const inviteMarker=String((operation as any).external_operation_id||"");
+    if(inviteMarker.startsWith("invite-sent:")){
+      const sentAt=Date.parse(inviteMarker.slice("invite-sent:".length));
+      const present=await isParticipantInGroup(group.external_group_id,payload.phone).catch(()=>null);
+      if(present){
+        await forwardParticipantEvents({action:"add",id:group.external_group_id,participants:[participantJid]});
+        res.status(200).json({ok:true,data:{status:"already_member",phone:payload.phone,action:"add"},confirmation:"Participant joined through the invite; membership verified."});
+        return;
+      }
+      if(Number.isFinite(sentAt)&&Date.now()-sentAt<24*3600*1000){
+        res.status(202).json({ok:true,data:{status:"invite_pending",phone:payload.phone,action:"add"},confirmation:"Invite already sent; waiting for the participant to accept it."});
+        return;
+      }
+    }
+    const result:any=await groupParticipantAction(group.external_group_id,payload.phone,"add",env.COMMUNITY_JID);
+    if(result.status==="already_member"||result.status==="added_verified"){
+      // Membership was verified against fresh WhatsApp metadata. Confirm the
+      // Community first, then the announcements group (a linked subgroup).
+      const targets=[group.external_group_id];
+      if(result.announcementJid&&result.announcementJid!==group.external_group_id)targets.push(result.announcementJid);
+      for(const jid of targets)await forwardParticipantEvents({action:"add",id:jid,participants:[participantJid]});
+      res.status(200).json({ok:true,data:result,confirmation:"WhatsApp membership verified and reconciled."});
+      return;
+    }
+    if(result.status==="invite_sent"){
+      await db.from("access_operations").update({external_operation_id:"invite-sent:"+new Date().toISOString()}).eq("id",operation.id);
+      console.info("WhatsApp add blocked by participant privacy; invite sent",{operationId:operation.id,method:result.inviteMethod,whatsappStatus:result.whatsappStatus});
+      res.status(202).json({ok:true,data:result,confirmation:"WhatsApp privacy blocked a direct add; an invite was sent to the participant."});
       return;
     }
     res.status(202).json({ok:true,data:result,confirmation:"Request submitted; membership is pending the signed WhatsApp participant event."});
