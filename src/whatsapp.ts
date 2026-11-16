@@ -505,13 +505,15 @@ export async function groupParticipants(jid:string,configuredJid:string){
     const aliases=await jidAliases(wa,id,p.phoneNumber,p.lid);
     const isOwner=[...aliases].some(alias=>ownerAliases.has(alias));
     const isAdmin=isOwner||p.admin==="admin"||p.admin==="superadmin"||p.isAdmin===true||p.isSuperAdmin===true;
+    const phoneJid=[...aliases].find(alias=>alias.endsWith("@s.whatsapp.net"))||"";
+    const phoneNumber=String(p.phoneNumber||phoneJid.split("@")[0]||"").replace(/\D/g,"")||null;
     result.push({
       id,
       jid:id,
       // Preserve Baileys' PN mapping when the participant id is a LID.
       // The access worker uses this field to verify removals without guessing
       // from an opaque LID or treating a complete participant snapshot as empty.
-      phoneNumber:p.phoneNumber?String(p.phoneNumber):null,
+      phoneNumber,
       admin:Boolean(isAdmin),
       role:isOwner?"owner":isAdmin?"admin":"member",
       isOwner,
