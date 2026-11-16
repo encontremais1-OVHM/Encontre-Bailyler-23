@@ -518,7 +518,7 @@ export async function isParticipantInGroup(groupJid:string,phone:string):Promise
   return (await groupHasParticipant(wa,jid,target))?target:null;
 }
 async function registrationContinuationUrl(phone:string,communityJid:string){
-  const supabaseUrl=String(process.env.SUPABASE_URL||"").replace(/\\/+$/,"");
+  const supabaseUrl=String(process.env.SUPABASE_URL||"").replace(/\/+$/,"");
   const serviceKey=String(process.env.SUPABASE_SERVICE_ROLE_KEY||"");
   if(!supabaseUrl||!serviceKey)throw new Error("Não foi possível preparar o link seguro de continuação da inscrição.");
   const headers={apikey:serviceKey,authorization:"Bearer "+serviceKey};
@@ -542,7 +542,7 @@ async function registrationContinuationUrl(phone:string,communityJid:string){
   if(!subscription?.id||!["pending","active","grace_period"].includes(String(subscription.status)))throw new Error("Não foi encontrada uma inscrição activa para continuar.");
   const payload=Buffer.from(JSON.stringify({v:1,member_id:members[0].id,subscription_id:subscription.id,community_id:communityId,exp:Math.floor(Date.now()/1000)+7*86400})).toString("base64url");
   const signature=createHmac("sha256",serviceKey).update(payload).digest("base64url");
-  const base=String(process.env.PUBLIC_APP_URL||"https://encontrems1.netlify.app").replace(/\\/+$/,"");
+  const base=String(process.env.PUBLIC_APP_URL||"https://encontrems1.netlify.app").replace(/\/+$/,"");
   const url=new URL("/inscricao/estado",base);
   url.searchParams.set("token",payload+"."+signature);
   return url.toString();
