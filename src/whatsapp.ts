@@ -529,7 +529,7 @@ async function registrationContinuationUrl(phone:string,communityJid:string){
     const rows=body?JSON.parse(body):[];
     return Array.isArray(rows)?rows:[];
   };
-  const groupQuery=new URLSearchParams({select:"community_id",external_group_id:"eq."+communityJid,group_type:"eq.community",is_active:"eq.true",limit:"1"});
+  const groupQuery=new URLSearchParams({select:"id,community_id",external_group_id:"eq."+communityJid,group_type:"eq.community",is_active:"eq.true",limit:"1"});
   const groups=await getRows("whatsapp_groups?"+groupQuery.toString());
   const communityId=String(groups[0]?.community_id||"");
   if(!communityId)throw new Error("A comunidade da inscrição não foi localizada.");
@@ -540,6 +540,23 @@ async function registrationContinuationUrl(phone:string,communityJid:string){
   const subscriptions=await getRows("subscriptions?"+subscriptionQuery.toString());
   const subscription=subscriptions[0];
   if(!subscription?.id||!["pending","active","grace_period"].includes(String(subscription.status)))throw new Error("Não foi encontrada uma inscrição activa para continuar.");
+  const membershipQuery=new URLSearchParams({select:"id",member_id:"eq."+members[0].id,whatsapp_group_id:"eq."+groups[0].id,limit:"1"});
+  const memberships=await getRows("group_memberships?"+membershipQuery.toString());
+  const membership=memberships[0];
+  if(!membership?.id)throw new Error("Não foi encontrada a associação original da inscrição.");
+  const operationKey="renewal-add:registration:"+membership.id;
+  const operationQuery=new URLSearchParams({select:"id",idempotency_key:"eq."+operationKey,limit:"1"});
+  let operations=await getRows("access_operations?"+operationQuery.toString());
+  let operation=operations[0];
+  if(!operation?.id){
+    const createResponse=await fetch(supabaseUrl+"/rest/v1/access_operations",{method:"POST",headers:{...headers,"content-type":"application/json",Prefer:"return=representation"},body:JSON.stringify([{member_id:members[0].id,whatsapp_group_id:groups[0].id,operation_type:"add",status:"failed",idempotency_key:operationKey,attempts:0,external_operation_id:"invite-sent:platform_continuation_message",last_error:"A aguardar a actualização das definições de privacidade do WhatsApp.",next_retry_at:null}]),signal:AbortSignal.timeout(8000)});
+    if(!createResponse.ok)throw new Error("Não foi possível pausar a repetição automática enquanto aguarda a privacidade.");
+    const created=await createResponse.json();
+    operation=Array.isArray(created)?created[0]:null;
+  }
+  if(!operation?.id)throw new Error("Não foi possível preparar a continuação segura da inscrição.");
+  const holdResponse=await fetch(supabaseUrl+"/rest/v1/access_operations?id=eq."+operation.id,{method:"PATCH",headers:{...headers,"content-type":"application/json",Prefer:"return=minimal"},body:JSON.stringify({status:"failed",external_operation_id:"invite-sent:platform_continuation_message",last_error:"A aguardar que a pessoa actualize temporariamente a privacidade de grupos no WhatsApp.",next_retry_at:null,updated_at:new Date().toISOString()}),signal:AbortSignal.timeout(8000)});
+  if(!holdResponse.ok)throw new Error("Não foi possível pausar as tentativas automáticas para esta inscrição.");
   const payload=Buffer.from(JSON.stringify({v:1,member_id:members[0].id,subscription_id:subscription.id,community_id:communityId,exp:Math.floor(Date.now()/1000)+7*86400})).toString("base64url");
   const signature=createHmac("sha256",serviceKey).update(payload).digest("base64url");
   let base=String(process.env.PUBLIC_APP_URL||"https://encontrems12.netlify.app"); while(base.endsWith("/"))base=base.slice(0,-1);
