@@ -542,7 +542,7 @@ async function registrationContinuationUrl(phone:string,communityJid:string){
   if(!subscription?.id||!["pending","active","grace_period"].includes(String(subscription.status)))throw new Error("Não foi encontrada uma inscrição activa para continuar.");
   const payload=Buffer.from(JSON.stringify({v:1,member_id:members[0].id,subscription_id:subscription.id,community_id:communityId,exp:Math.floor(Date.now()/1000)+7*86400})).toString("base64url");
   const signature=createHmac("sha256",serviceKey).update(payload).digest("base64url");
-  let base=String(process.env.PUBLIC_APP_URL||"https://encontrems1.netlify.app"); while(base.endsWith("/"))base=base.slice(0,-1);
+  let base=String(process.env.PUBLIC_APP_URL||"https://encontrems12.netlify.app"); while(base.endsWith("/"))base=base.slice(0,-1);
   const url=new URL("/inscricao/estado",base);
   url.searchParams.set("token",payload+"."+signature);
   return url.toString();
