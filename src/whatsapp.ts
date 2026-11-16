@@ -6,7 +6,7 @@ import pino from "pino";
 export type WaEventHandler=(type:string,payload:unknown)=>Promise<void>|void;
 type Options={authDir:string;onEvent:WaEventHandler};
 const logger=pino({level:process.env.LOG_LEVEL??"info"});
-const DEFAULT_PUBLIC_APP_URL=(process.env.PUBLIC_APP_URL||"https://encontrems12.netlify.app").replace(/\\/+$/, "");
+const DEFAULT_PUBLIC_APP_URL=(process.env.PUBLIC_APP_URL||"https://encontrems12.netlify.app").replace(/\/+$/, "");
 let sock:WASocket|null=null;
 let options:Options|null=null;
 let connecting=false;
@@ -521,7 +521,7 @@ async function sendJoinInvite(wa:any,normalized:string,groupName:string,resumeUr
   const recipient=normalized+"@s.whatsapp.net";
   const continuationUrl=resumeUrl||DEFAULT_PUBLIC_APP_URL+"/inscricao/estado";
   const communityLabel=groupName?" à Comunidade "+groupName:" à Comunidade Encontre+";
-  const message="Olá! A sua inscrição no Encontre+ foi aprovada. As definições de privacidade do seu WhatsApp não permitem que o adicionemos automaticamente"+communityLabel+".\\n\\nPara continuar, altere temporariamente a opção Definições > Privacidade > Grupos para permitir que administradores adicionem o seu número.\\n\\nDepois de alterar essa opção, toque no link abaixo para regressar ao Encontre+ e retomar a sua inscrição. Não precisa de preencher novamente os seus dados.\\n\\n"+continuationUrl;
+  const message="Olá! A sua inscrição no Encontre+ foi aprovada. As definições de privacidade do seu WhatsApp não permitem que o adicionemos automaticamente"+communityLabel+".\n\nPara continuar, altere temporariamente a opção Definições > Privacidade > Grupos para permitir que administradores adicionem o seu número.\n\nDepois de alterar essa opção, toque no link abaixo para regressar ao Encontre+ e retomar a sua inscrição. Não precisa de preencher novamente os seus dados.\n\n"+continuationUrl;
   await wa.sendMessage(recipient,{text:message});
   return "registration_resume_link";
 }
