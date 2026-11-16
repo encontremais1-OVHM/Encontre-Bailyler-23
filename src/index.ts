@@ -37,7 +37,7 @@ async function webhookSecret(){
 function registrationResumeUrl(memberId:string,subscriptionId:string,communityId:string){
   const payload=Buffer.from(JSON.stringify({v:1,member_id:memberId,subscription_id:subscriptionId,community_id:communityId,exp:Math.floor(Date.now()/1000)+7*24*60*60})).toString("base64url");
   const signature=createHmac("sha256",env.SUPABASE_SERVICE_ROLE_KEY).update(payload).digest("base64url");
-  return env.PUBLIC_APP_URL.replace(/\\/+$/, "")+"/inscricao/estado?token="+encodeURIComponent(payload+"."+signature);
+  return env.PUBLIC_APP_URL.replace(/\/+$/, "")+"/inscricao/estado?token="+encodeURIComponent(payload+"."+signature);
 }
 app.post("/internal/whatsapp/participants/add",async(req,res)=>{
   try{
