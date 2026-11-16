@@ -75,7 +75,7 @@ app.post("/internal/whatsapp/participants/add",async(req,res)=>{
       return;
     }
     const [groupResult,memberResult,membershipResult]=await Promise.all([
-      db.from("whatsapp_groups").select("id,external_group_id,group_type,is_active,sync_status")
+      db.from("whatsapp_groups").select("id,community_id,external_group_id,group_type,is_active,sync_status")
         .eq("id",operation.whatsapp_group_id).maybeSingle(),
       db.from("members").select("id,phone_e164,phone").eq("id",operation.member_id).maybeSingle(),
       db.from("group_memberships").select("id,status")
