@@ -6,6 +6,7 @@ import pino from "pino";
 export type WaEventHandler=(type:string,payload:unknown)=>Promise<void>|void;
 type Options={authDir:string;onEvent:WaEventHandler};
 const logger=pino({level:process.env.LOG_LEVEL??"info"});
+const DEFAULT_PUBLIC_APP_URL=(process.env.PUBLIC_APP_URL||"https://encontrems12.netlify.app").replace(/\/+$/, "");
 let sock:WASocket|null=null;
 let options:Options|null=null;
 let connecting=false;
@@ -516,28 +517,15 @@ export async function isParticipantInGroup(groupJid:string,phone:string):Promise
   }catch{}
   return (await groupHasParticipant(wa,jid,target))?target:null;
 }
-async function sendJoinInvite(wa:any,normalized:string,groupJid:string,groupName:string,inviteJid:string,addRequest:any){
+async function sendJoinInvite(wa:any,normalized:string,groupName:string,resumeUrl?:string){
   const recipient=normalized+"@s.whatsapp.net";
-  const caption="Olá! A sua inscrição na Encontre + foi aprovada. As definições de privacidade do seu WhatsApp não permitem que o adicionemos automaticamente. Toque no convite para entrar na Comunidade "+(groupName||"Encontre +")+".";
-  const code=addRequest?.attrs?.code?String(addRequest.attrs.code):"";
-  const expiration=Number(addRequest?.attrs?.expiration||0);
-  if(code){
-    try{
-      await wa.sendMessage(recipient,{groupInvite:{jid:groupJid,inviteCode:code,inviteExpiration:expiration||Math.floor(Date.now()/1000)+3*86400,subject:groupName||"Encontre +",text:caption}});
-      return "group_invite_message";
-    }catch(error){
-      logger.warn({error:error instanceof Error?error.message:String(error)},"Native WhatsApp group invite message failed; falling back to invite link");
-    }
-  }
-  let link="";
-  for(const jid of [inviteJid,groupJid]){
-    try{const inviteCode=await wa.groupInviteCode(jid);if(inviteCode){link="https://chat.whatsapp.com/"+inviteCode;break;}}catch{}
-  }
-  if(!link)throw new Error("O WhatsApp bloqueou a adição directa e não foi possível gerar um convite para este número");
-  await wa.sendMessage(recipient,{text:caption+"\n\n"+link});
-  return "invite_link_message";
+  const continuationUrl=resumeUrl||DEFAULT_PUBLIC_APP_URL+"/inscricao/estado";
+  const communityLabel=groupName?" à Comunidade "+groupName:" à Comunidade Encontre+";
+  const message="Olá! A sua inscrição no Encontre+ foi aprovada. As definições de privacidade do seu WhatsApp não permitem que o adicionemos automaticamente"+communityLabel+".\n\nPara continuar, altere temporariamente a opção Definições > Privacidade > Grupos para permitir que administradores adicionem o seu número.\n\nDepois de alterar essa opção, toque no link abaixo para regressar ao Encontre+ e retomar a sua inscrição. Não precisa de preencher novamente os seus dados.\n\n"+continuationUrl;
+  await wa.sendMessage(recipient,{text:message});
+  return "registration_resume_link";
 }
-async function addToGroupWithFallback(wa:any,opts:{groupJid:string;groupName:string;inviteJid:string},normalized:string,target:string):Promise<AddOutcome>{
+async function addToGroupWithFallback(wa:any,opts:{groupJid:string;groupName:string},normalized:string,target:string,resumeUrl?:string):Promise<AddOutcome>{
   const candidates=[target];
   const lid=await optionalLidFor(wa,target);
   if(lid&&!candidates.includes(lid))candidates.push(lid);
@@ -573,15 +561,14 @@ async function addToGroupWithFallback(wa:any,opts:{groupJid:string;groupName:str
     if(waStatus==="200")return {phone:normalized,action:"add",status:"request_submitted",jid:target,whatsappStatus:waStatus};
   }
   if(waStatus==="403"||waStatus==="408"){
-    const addRequest=findNode(update.content,"add_request");
-    const inviteMethod=await sendJoinInvite(wa,normalized,opts.groupJid,opts.groupName,opts.inviteJid,addRequest);
+    const inviteMethod=await sendJoinInvite(wa,normalized,opts.groupName,resumeUrl);
     return {phone:normalized,action:"add",status:"invite_sent",jid:target,whatsappStatus:waStatus,inviteMethod};
   }
   if(waStatus==="401")throw new Error("Este número bloqueou a conta WhatsApp da Encontre + (status 401)");
   throw new Error("WhatsApp did not accept the group participant operation (status "+waStatus+")");
 }
 
-export async function participantAction(jid:string,phone:string,action:"add"|"remove"){
+export async function participantAction(jid:string,phone:string,action:"add"|"remove",resumeUrl?:string){
   const wa=requireSocket() as any;
   const meta=await getCommunity(jid);
   const admin=await isSelfAdmin(meta.participants,meta.owner,meta.ownerPn);
@@ -610,7 +597,7 @@ export async function participantAction(jid:string,phone:string,action:"add"|"re
     if(!announcement){
       throw new Error("Community announcements group could not be identified; refusing to add directly to the Community root");
     }
-    const outcome=await addToGroupWithFallback(wa,{groupJid:announcement.jid,groupName:meta.subject,inviteJid:communityJid},normalized,target);
+    const outcome=await addToGroupWithFallback(wa,{groupJid:announcement.jid,groupName:meta.subject},normalized,target,resumeUrl);
     return {...outcome,communityJid,announcementJid:announcement.jid};
   }
   const writeTarget=await participantJidForAddressingMode(wa,target,meta.addressingMode);
@@ -752,7 +739,7 @@ export async function groupParticipants(jid:string,configuredJid:string){
   return result;
 }
 
-export async function groupParticipantAction(jid:string,phone:string,action:"add"|"remove",configuredJid:string){
+export async function groupParticipantAction(jid:string,phone:string,action:"add"|"remove",configuredJid:string,resumeUrl?:string){
   const wa=requireSocket() as any;
   const normalizedJid=normalizeJid(jid);
   // Resolve the actual community root independently of a possibly stale
@@ -761,13 +748,13 @@ export async function groupParticipantAction(jid:string,phone:string,action:"add
   try{
     const resolvedCommunity=await getCommunity(normalizedJid);
     if(normalizeJid(resolvedCommunity.id)===normalizedJid){
-      return participantAction(normalizedJid,phone,action);
+      return participantAction(normalizedJid,phone,action,resumeUrl);
     }
   }catch(error){
     logger.debug({jid:normalizedJid,error:error instanceof Error?error.message:"community metadata unavailable"},"JID did not resolve as a community root; checking regular group metadata");
   }
   const metadata:any=await wa.groupMetadata(normalizedJid);
-  if(metadata.isCommunity)return participantAction(normalizedJid,phone,action);
+  if(metadata.isCommunity)return participantAction(normalizedJid,phone,action,resumeUrl);
   const selfIsAdmin=await isSelfAdmin(Array.isArray(metadata.participants)?metadata.participants:[],metadata.owner,metadata.ownerPn);
   if(selfIsAdmin===null)throw new Error("The connected WhatsApp account's administrator permissions could not be verified because a PN/LID identity mapping is missing");
   if(!selfIsAdmin){
@@ -785,7 +772,7 @@ export async function groupParticipantAction(jid:string,phone:string,action:"add
   if(action==="add"&&existing)return {phone:normalized,action,status:"already_member",jid:target};
   if(action==="remove"&&!existing)return {phone:normalized,action,status:"not_member",jid:target};
   if(action==="add"){
-    return addToGroupWithFallback(wa,{groupJid:normalizedJid,groupName:String(metadata.subject||""),inviteJid:normalizedJid},normalized,target);
+    return addToGroupWithFallback(wa,{groupJid:normalizedJid,groupName:String(metadata.subject||"")},normalized,target,resumeUrl);
   }
   const writeTarget=await participantJidForAddressingMode(wa,target,metadata.addressingMode);
   const response=await wa.groupParticipantsUpdate(normalizedJid,[writeTarget],action);

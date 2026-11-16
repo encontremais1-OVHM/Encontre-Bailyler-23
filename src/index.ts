@@ -15,6 +15,7 @@ const env=z.object({
   COMMUNITY_JID:z.string().regex(/^\d+(?:-\d+)?@g\.us$/),
   SUPABASE_URL:z.string().url(),
   SUPABASE_SERVICE_ROLE_KEY:z.string().min(1),
+  PUBLIC_APP_URL:z.string().url().default("https://encontrems12.netlify.app"),
 }).parse(process.env);
 const db=createClient(env.SUPABASE_URL,env.SUPABASE_SERVICE_ROLE_KEY,{auth:{persistSession:false,autoRefreshToken:false}});
 type RawBodyRequest=Request&{rawBody?:Buffer};
@@ -32,6 +33,11 @@ async function webhookSecret(){
     return data;
   })();
   return webhookSecretPromise;
+}
+function registrationResumeUrl(memberId:string,subscriptionId:string,communityId:string){
+  const payload=Buffer.from(JSON.stringify({v:1,member_id:memberId,subscription_id:subscriptionId,community_id:communityId,exp:Math.floor(Date.now()/1000)+7*24*60*60})).toString("base64url");
+  const signature=createHmac("sha256",env.SUPABASE_SERVICE_ROLE_KEY).update(payload).digest("base64url");
+  return env.PUBLIC_APP_URL.replace(/\/+$/, "")+"/inscricao/estado?token="+encodeURIComponent(payload+"."+signature);
 }
 app.post("/internal/whatsapp/participants/add",async(req,res)=>{
   try{
@@ -69,7 +75,7 @@ app.post("/internal/whatsapp/participants/add",async(req,res)=>{
       return;
     }
     const [groupResult,memberResult,membershipResult]=await Promise.all([
-      db.from("whatsapp_groups").select("id,external_group_id,group_type,is_active,sync_status")
+      db.from("whatsapp_groups").select("id,community_id,external_group_id,group_type,is_active,sync_status")
         .eq("id",operation.whatsapp_group_id).maybeSingle(),
       db.from("members").select("id,phone_e164,phone").eq("id",operation.member_id).maybeSingle(),
       db.from("group_memberships").select("id,status")
@@ -108,7 +114,11 @@ app.post("/internal/whatsapp/participants/add",async(req,res)=>{
         return;
       }
     }
-    const result:any=await groupParticipantAction(group.external_group_id,payload.phone,"add",env.COMMUNITY_JID);
+    const {data:subscription,error:subscriptionError}=await db.from("subscriptions").select("id").eq("member_id",operation.member_id).eq("community_id",group.community_id).order("created_at",{ascending:false}).limit(1).maybeSingle();
+    if(subscriptionError)throw subscriptionError;
+    if(!subscription)throw new Error("A inscrição associada a esta operação não foi encontrada; não é possível criar o link seguro de continuação.");
+    const resumeUrl=registrationResumeUrl(member.id,subscription.id,group.community_id);
+    const result:any=await groupParticipantAction(group.external_group_id,payload.phone,"add",env.COMMUNITY_JID,resumeUrl);
     if(result.status==="already_member"||result.status==="added_verified"){
       // Membership was verified against fresh WhatsApp metadata. Confirm the
       // Community first, then the announcements group (a linked subgroup).
@@ -120,8 +130,8 @@ app.post("/internal/whatsapp/participants/add",async(req,res)=>{
     }
     if(result.status==="invite_sent"){
       await db.from("access_operations").update({external_operation_id:"invite-sent:"+new Date().toISOString()}).eq("id",operation.id);
-      console.info("WhatsApp add blocked by participant privacy; invite sent",{operationId:operation.id,method:result.inviteMethod,whatsappStatus:result.whatsappStatus});
-      res.status(202).json({ok:true,data:result,confirmation:"WhatsApp privacy blocked a direct add; an invite was sent to the participant."});
+      console.info("WhatsApp add blocked by participant privacy; registration continuation instructions sent",{operationId:operation.id,method:result.inviteMethod,whatsappStatus:result.whatsappStatus});
+      res.status(202).json({ok:true,data:result,confirmation:"WhatsApp privacy blocked the automatic add; instructions and a secure Encontre+ continuation link were sent to the participant."});
       return;
     }
     res.status(202).json({ok:true,data:result,confirmation:"Request submitted; membership is pending the signed WhatsApp participant event."});
