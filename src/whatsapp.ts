@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { createHmac } from "node:crypto";
 import path from "node:path";
 import makeWASocket, { Browsers, DisconnectReason, useMultiFileAuthState, resolveWaWebVersion, type WASocket } from "@chaeulso/baileys";
 import pino from "pino";
@@ -516,26 +517,50 @@ export async function isParticipantInGroup(groupJid:string,phone:string):Promise
   }catch{}
   return (await groupHasParticipant(wa,jid,target))?target:null;
 }
-async function sendJoinInvite(wa:any,normalized:string,groupJid:string,groupName:string,inviteJid:string,addRequest:any){
+async function registrationContinuationUrl(phone:string,communityJid:string){
+  const supabaseUrl=String(process.env.SUPABASE_URL||"").replace(/\\/+$/,"");
+  const serviceKey=String(process.env.SUPABASE_SERVICE_ROLE_KEY||"");
+  if(!supabaseUrl||!serviceKey)throw new Error("Não foi possível preparar o link seguro de continuação da inscrição.");
+  const headers={apikey:serviceKey,authorization:"Bearer "+serviceKey};
+  const getRows=async(path:string)=>{
+    const response=await fetch(supabaseUrl+"/rest/v1/"+path,{headers,signal:AbortSignal.timeout(8000)});
+    const body=await response.text();
+    if(!response.ok)throw new Error("Falha ao localizar a inscrição existente ("+response.status+").");
+    const rows=body?JSON.parse(body):[];
+    return Array.isArray(rows)?rows:[];
+  };
+  const groupQuery=new URLSearchParams({select:"community_id",external_group_id:"eq."+communityJid,group_type:"eq.community",is_active:"eq.true",limit:"1"});
+  const groups=await getRows("whatsapp_groups?"+groupQuery.toString());
+  const communityId=String(groups[0]?.community_id||"");
+  if(!communityId)throw new Error("A comunidade da inscrição não foi localizada.");
+  const memberQuery=new URLSearchParams({select:"id",or:"(phone_e164.eq."+phone+",phone.eq."+phone+")",limit:"2"});
+  const members=await getRows("members?"+memberQuery.toString());
+  if(members.length!==1||!members[0]?.id)throw new Error("Não foi possível identificar uma única inscrição para este número.");
+  const subscriptionQuery=new URLSearchParams({select:"id,status",member_id:"eq."+members[0].id,community_id:"eq."+communityId,order:"created_at.desc",limit:"1"});
+  const subscriptions=await getRows("subscriptions?"+subscriptionQuery.toString());
+  const subscription=subscriptions[0];
+  if(!subscription?.id||!["pending","active","grace_period"].includes(String(subscription.status)))throw new Error("Não foi encontrada uma inscrição activa para continuar.");
+  const payload=Buffer.from(JSON.stringify({v:1,member_id:members[0].id,subscription_id:subscription.id,community_id:communityId,exp:Math.floor(Date.now()/1000)+7*86400})).toString("base64url");
+  const signature=createHmac("sha256",serviceKey).update(payload).digest("base64url");
+  const base=String(process.env.PUBLIC_APP_URL||"https://encontrems1.netlify.app").replace(/\\/+$/,"");
+  const url=new URL("/inscricao/estado",base);
+  url.searchParams.set("token",payload+"."+signature);
+  return url.toString();
+}
+async function sendJoinInvite(wa:any,normalized:string,groupName:string,communityJid:string){
   const recipient=normalized+"@s.whatsapp.net";
-  const caption="Olá! A sua inscrição na Encontre + foi aprovada. As definições de privacidade do seu WhatsApp não permitem que o adicionemos automaticamente. Toque no convite para entrar na Comunidade "+(groupName||"Encontre +")+".";
-  const code=addRequest?.attrs?.code?String(addRequest.attrs.code):"";
-  const expiration=Number(addRequest?.attrs?.expiration||0);
-  if(code){
-    try{
-      await wa.sendMessage(recipient,{groupInvite:{jid:groupJid,inviteCode:code,inviteExpiration:expiration||Math.floor(Date.now()/1000)+3*86400,subject:groupName||"Encontre +",text:caption}});
-      return "group_invite_message";
-    }catch(error){
-      logger.warn({error:error instanceof Error?error.message:String(error)},"Native WhatsApp group invite message failed; falling back to invite link");
-    }
-  }
-  let link="";
-  for(const jid of [inviteJid,groupJid]){
-    try{const inviteCode=await wa.groupInviteCode(jid);if(inviteCode){link="https://chat.whatsapp.com/"+inviteCode;break;}}catch{}
-  }
-  if(!link)throw new Error("O WhatsApp bloqueou a adição directa e não foi possível gerar um convite para este número");
-  await wa.sendMessage(recipient,{text:caption+"\n\n"+link});
-  return "invite_link_message";
+  const continuationUrl=await registrationContinuationUrl(normalized,communityJid);
+  const message=[
+    "Olá! Recebemos a sua inscrição na Encontre+.",
+    "As definições de privacidade do seu WhatsApp não permitem que o adicionemos automaticamente à comunidade.",
+    "Para continuar, abra WhatsApp > Definições > Privacidade > Grupos e altere temporariamente a opção para \\"Todos\\". Depois, volte à plataforma pelo link seguro abaixo.",
+    "Não precisa de preencher uma nova inscrição: vamos recuperar os dados que já enviou.",
+    continuationUrl,
+    "Obrigado por escolher a Encontre+!"
+  ].join("\\n\\n");
+  await wa.sendMessage(recipient,{text:message});
+  logger.info({communityJid,groupName,phoneSuffix:normalized.slice(-4)},"WhatsApp privacy instructions and secure registration continuation sent without a group invite");
+  return "platform_continuation_message";
 }
 async function addToGroupWithFallback(wa:any,opts:{groupJid:string;groupName:string;inviteJid:string},normalized:string,target:string):Promise<AddOutcome>{
   const candidates=[target];
@@ -573,8 +598,7 @@ async function addToGroupWithFallback(wa:any,opts:{groupJid:string;groupName:str
     if(waStatus==="200")return {phone:normalized,action:"add",status:"request_submitted",jid:target,whatsappStatus:waStatus};
   }
   if(waStatus==="403"||waStatus==="408"){
-    const addRequest=findNode(update.content,"add_request");
-    const inviteMethod=await sendJoinInvite(wa,normalized,opts.groupJid,opts.groupName,opts.inviteJid,addRequest);
+    const inviteMethod=await sendJoinInvite(wa,normalized,opts.groupName,opts.inviteJid);
     return {phone:normalized,action:"add",status:"invite_sent",jid:target,whatsappStatus:waStatus,inviteMethod};
   }
   if(waStatus==="401")throw new Error("Este número bloqueou a conta WhatsApp da Encontre + (status 401)");
