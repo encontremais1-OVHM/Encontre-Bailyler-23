@@ -508,6 +508,10 @@ export async function groupParticipants(jid:string,configuredJid:string){
     result.push({
       id,
       jid:id,
+      // Preserve Baileys' PN mapping when the participant id is a LID.
+      // The access worker uses this field to verify removals without guessing
+      // from an opaque LID or treating a complete participant snapshot as empty.
+      phoneNumber:p.phoneNumber?String(p.phoneNumber):null,
       admin:Boolean(isAdmin),
       role:isOwner?"owner":isAdmin?"admin":"member",
       isOwner,
