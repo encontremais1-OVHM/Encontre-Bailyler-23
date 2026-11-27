@@ -63,10 +63,16 @@ export async function connect(next?:Options):Promise<void>{
         const code=disconnectError?.output?.statusCode;
         lastError=disconnectError?.message || "WhatsApp connection closed"+(code?" (code "+code+")":"");
         logger.warn({statusCode:code,error:lastError},"WhatsApp connection closed");
-        const loggedOut=code===DisconnectReason.loggedOut;
+        // Treat WhatsApp 401/403 as terminal authentication/session failures.
+        // Reconnecting with the same rejected credentials only creates an endless loop;
+        // the admin must explicitly clear the persisted session and pair again.
+        const terminalAuthFailure=code===DisconnectReason.loggedOut||code===401||code===403;
+        if(code===401||code===403){
+          lastError="O WhatsApp recusou a sessão guardada (HTTP "+code+"). Limpe a sessão e associe novamente o dispositivo.";
+        }
         communitySnapshotCache=null;communitySnapshotCooldownUntil=0;communitySnapshotInFlight=null;
-        connectionState=loggedOut?"logged_out":"disconnected";sock=null;qr=null;pairingCode=null;
-        if(!loggedOut&&options&&!reconnectTimer){
+        connectionState=terminalAuthFailure?"logged_out":"disconnected";sock=null;qr=null;pairingCode=null;
+        if(!terminalAuthFailure&&options&&!reconnectTimer){
           // WhatsApp deliberately closes the stream with 515 after a device
           // has been paired. This is a protocol instruction to reconnect now,
           // not a failed login. Preserve auth and restart without exponential
@@ -113,8 +119,14 @@ export async function pairing(phone:string){
 export async function logout(){
   if(reconnectTimer)clearTimeout(reconnectTimer);reconnectTimer=null;
   const old=sock;sock=null;connectionState="logged_out";qr=null;pairingCode=null;registered=false;
-  if(old)await old.logout();
-  if(options)await fs.rm(options.authDir,{recursive:true,force:true});
+  try{
+    if(old)await old.logout();
+  }catch(error){
+    // A closed/rejected socket must never prevent local credential cleanup.
+    logger.warn({error:error instanceof Error?error.message:"WhatsApp logout failed"},"WhatsApp socket logout failed; clearing persisted credentials anyway");
+  }finally{
+    if(options)await fs.rm(options.authDir,{recursive:true,force:true});
+  }
 }
 export function socket(){return requireSocket();}
 type CommunityParticipant={id:string;admin?:string|null;phoneNumber?:string|null;lid?:string|null;isAdmin?:boolean;isSuperAdmin?:boolean};
